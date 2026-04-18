@@ -15,6 +15,25 @@ if (!file_exists(CONFIG_PATH . '/config.php')) {
 }
 $GLOBALS['config'] = require CONFIG_PATH . '/config.php';
 
+final class Config
+{
+    public static function get(string $key, $default = null)
+    {
+        $cfg = $GLOBALS['config'] ?? [];
+        if (array_key_exists($key, $cfg)) return $cfg[$key];
+        if (strpos($key, '.') !== false) {
+            $parts = explode('.', $key);
+            $node = $cfg;
+            foreach ($parts as $p) {
+                if (!is_array($node) || !array_key_exists($p, $node)) return $default;
+                $node = $node[$p];
+            }
+            return $node;
+        }
+        return $default;
+    }
+}
+
 if (defined('APP_ENV') && APP_ENV === 'development') {
     error_reporting(E_ALL);
     ini_set('display_errors', '1');
@@ -27,7 +46,10 @@ if (defined('APP_ENV') && APP_ENV === 'development') {
 spl_autoload_register(function ($class) {
     $candidates = [
         SYSTEM_PATH . '/' . $class . '.php',
+        SYSTEM_PATH . '/Jwt/' . $class . '.php',
+        SYSTEM_PATH . '/Security/' . $class . '.php',
         APP_PATH . '/Controllers/' . $class . '.php',
+        APP_PATH . '/Controllers/Api/' . $class . '.php',
         APP_PATH . '/Models/' . $class . '.php',
     ];
     foreach ($candidates as $file) {
@@ -79,7 +101,9 @@ register_shutdown_function(function () {
     }
 });
 
-if (session_status() === PHP_SESSION_NONE) {
+$isApi = isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], '/api/') !== false;
+
+if (!$isApi && session_status() === PHP_SESSION_NONE) {
     $secure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
     $lifetime = defined('SESSION_LIFETIME') ? (int)SESSION_LIFETIME : 0;
     session_set_cookie_params([
