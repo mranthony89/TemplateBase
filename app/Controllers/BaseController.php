@@ -1,25 +1,10 @@
 <?php
 if (!defined('SECURE_ACCESS')) die;
 
-/**
- * app/Controllers/BaseController.php
- * --------------------------------------------------------------------
- * Classe astratta comune: render view, redirect sicuro, check auth,
- * verifica CSRF per richieste POST.
- *
- * I metodi di questa classe NON sono routabili (il Router li esclude
- * via ReflectionMethod::getDeclaringClass check).
- * --------------------------------------------------------------------
- */
 abstract class BaseController
 {
-    /**
-     * Rende una view PHP passandole $data come variabili locali.
-     * Le view stanno in /app/Views/ e DEVONO usare h() per l'output.
-     */
     protected function view(string $name, array $data = []): void
     {
-        // Valida il nome view (no path traversal)
         if (!preg_match('/^[a-zA-Z0-9_\/-]+$/', $name)) {
             throw new InvalidArgumentException('Nome view non valido');
         }
@@ -27,15 +12,10 @@ abstract class BaseController
         if (!is_file($file)) {
             throw new RuntimeException("View non trovata: $name");
         }
-        // extract con EXTR_SKIP: mai sovrascrivere variabili esistenti
         extract($data, EXTR_SKIP);
         require $file;
     }
 
-    /**
-     * Redirect sicuro: SOLO path relativi (inizianti con /).
-     * Previene open redirect: un URL esterno viene rifiutato.
-     */
     protected function redirect(string $path): void
     {
         if (!preg_match('#^/[A-Za-z0-9_/\-\?=&%\.]*$#', $path)) {
@@ -46,7 +26,6 @@ abstract class BaseController
         exit;
     }
 
-    /** Risposta JSON (utile per endpoint AJAX) */
     protected function json($data, int $status = 200): void
     {
         http_response_code($status);
@@ -56,7 +35,6 @@ abstract class BaseController
         exit;
     }
 
-    /** Richiede utente autenticato. Altrimenti redirect a /login. */
     protected function requireAuth(): int
     {
         $uid = $_SESSION['user_id'] ?? null;
@@ -66,10 +44,6 @@ abstract class BaseController
         return (int)$uid;
     }
 
-    /**
-     * Verifica CSRF obbligatoria per POST/PUT/DELETE.
-     * Chiamare a inizio di ogni action che modifica stato.
-     */
     protected function requireCsrf(): void
     {
         $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -77,5 +51,40 @@ abstract class BaseController
             http_response_code(403);
             die('CSRF token non valido');
         }
+    }
+
+    /**
+     * Decode JSON body of an API request. Returns array (empty on parse failure).
+     */
+    protected function getJsonInput(): array
+    {
+        $raw = file_get_contents('php://input') ?: '';
+        if ($raw === '') return [];
+        $data = json_decode($raw, true);
+        return is_array($data) ? $data : [];
+    }
+
+    /**
+     * Validate a Bearer JWT in the Authorization header.
+     * On success, returns the decoded payload (with user_id, jti, exp, ...).
+     * On failure, sends 401 JSON and exits.
+     */
+    protected function requireJwt(): array
+    {
+        $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
+        if (!$auth && function_exists('apache_request_headers')) {
+            $h = apache_request_headers();
+            $auth = $h['Authorization'] ?? $h['authorization'] ?? '';
+        }
+        if (stripos($auth, 'Bearer ') !== 0) {
+            $this->json(['error' => 'missing_token'], 401);
+        }
+        $token = trim(substr($auth, 7));
+        $payload = Jwt::decode($token);
+        if (!$payload || empty($payload['user_id'])) {
+            Logger::security('JWT validation failed', ['gdpr_sensitive' => 1, 'ip' => $_SERVER['REMOTE_ADDR'] ?? '']);
+            $this->json(['error' => 'invalid_token'], 401);
+        }
+        return $payload;
     }
 }

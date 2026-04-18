@@ -1,36 +1,30 @@
-# ===================================================================
-# public_html/.htaccess — Document Root
-# Routing + Security Headers + Blocchi
-# ===================================================================
+# =============================================================
+# public/.htaccess — Document Root (post-rename da public_html)
+# =============================================================
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
 
-    # Path traversal block (sia query string che path URI)
     RewriteCond %{QUERY_STRING} (\.\./|\.\.\\) [NC,OR]
     RewriteCond %{REQUEST_URI} (\.\./|\.\.\\) [NC]
     RewriteRule ^ - [F,L]
 
-    # Blocco path CMS/exploit comuni
     RewriteRule ^(wp-login|xmlrpc|wp-admin|phpmyadmin|shell|eval|cmd)\.php$ - [F,L]
     RewriteRule ^\.(env|git|ht|svn|DS_Store) - [F,L]
 
-    # Blocco metodi HTTP non necessari
     RewriteCond %{REQUEST_METHOD} !^(GET|POST|HEAD|OPTIONS)$
     RewriteRule ^ - [F,L]
 
-    # File e directory reali serviti direttamente (assets, ecc.)
     RewriteCond %{REQUEST_FILENAME} -f [OR]
     RewriteCond %{REQUEST_FILENAME} -d
     RewriteRule ^ - [L]
 
-    # Tutto il resto va a index.php (front controller)
     RewriteRule ^ index.php [L,QSA]
 </IfModule>
 
-# ===================================================================
+# =============================================================
 # Security Headers
-# ===================================================================
+# =============================================================
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
     Header always set X-Frame-Options "SAMEORIGIN"
@@ -39,40 +33,45 @@
     Header always set Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 
-    # CSP stretta: niente unsafe-inline (scelta consapevole per evitare debito tecnico)
-    Header always set Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+    # -------------------------------------------------------------
+    # Content-Security-Policy
+    # Permette Bootstrap/Chart.js (jsdelivr, cdnjs), Google Fonts,
+    # stili inline (necessari a Bootstrap) e same-origin.
+    #
+    # HARDENING PRODUZIONE:
+    #   1) Rimuovere 'unsafe-inline' da script-src e usare nonce:
+    #        Header set Content-Security-Policy "... script-src 'self' 'nonce-XYZ' ..."
+    #      Generare il nonce in bootstrap.php: bin2hex(random_bytes(16))
+    #      e inserirlo in ogni <script nonce="...">.
+    #   2) Rimuovere 'unsafe-inline' da style-src e migrare gli style=""
+    #      inline in classi CSS, oppure usare hash SHA-256 per i blocchi
+    #      residui: 'sha256-BASE64HASH'.
+    #   3) Limitare le CDN: sostituire 'jsdelivr'/'cdnjs' con gli host
+    #      effettivamente in uso o, meglio, self-host con SRI.
+    # -------------------------------------------------------------
+    Header set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
 
-    # Rimuove fingerprinting del server
     Header unset X-Powered-By
     Header unset Server
 </IfModule>
 
-# ===================================================================
-# Blocca file sensibili anche se finissero per errore in public_html
-# ===================================================================
+# =============================================================
+# File sensibili
+# =============================================================
 <FilesMatch "(\.env|\.log$|\.bak$|\.sql$|\.sqlite$|\.ini$|composer\.(json|lock))">
     Require all denied
 </FilesMatch>
 
-# ===================================================================
-# Disabilita listing directory
-# ===================================================================
 <IfModule mod_autoindex.c>
     Options -Indexes
 </IfModule>
 
-# ===================================================================
-# Compressione (solo asset statici — niente HTML/JSON per evitare leak token)
-# ===================================================================
 <IfModule mod_deflate.c>
     AddOutputFilterByType DEFLATE text/css
     AddOutputFilterByType DEFLATE text/javascript
     AddOutputFilterByType DEFLATE application/javascript
 </IfModule>
 
-# ===================================================================
-# Caching asset statici
-# ===================================================================
 <IfModule mod_expires.c>
     ExpiresActive On
     ExpiresByType text/html "now"
