@@ -1,29 +1,12 @@
 <?php
-/**
- * system/bootstrap.php
- * --------------------------------------------------------------------
- * Punto di ingresso del framework: costanti, autoloader, error handler,
- * avvio sessione sicura. Incluso UNA SOLA VOLTA da public_html/index.php.
- * --------------------------------------------------------------------
- */
-
-// SECURE_ACCESS: chiave comune a tutti i file del nucleo. Se un file
-// del template viene richiamato direttamente (es. via URL malevolo),
-// muore subito. Definita PRIMA di qualsiasi altra cosa.
 define('SECURE_ACCESS', true);
-
-// ROOT_PATH = directory parent di /system/ (es. /home/utente/ su cPanel)
-// Usiamo dirname(__DIR__) perché è assoluto e immune a manipolazioni CWD.
 define('ROOT_PATH', dirname(__DIR__));
-
-// Path derivati — tutti assoluti
 define('SYSTEM_PATH', ROOT_PATH . '/system');
 define('APP_PATH',    ROOT_PATH . '/app');
 define('CONFIG_PATH', ROOT_PATH . '/config');
 define('LOGS_PATH',   ROOT_PATH . '/logs');
-define('PUBLIC_PATH', ROOT_PATH . '/public_html');
+define('PUBLIC_PATH', ROOT_PATH . '/public');
 
-// Carica costanti applicative e config DB
 require_once CONFIG_PATH . '/constants.php';
 
 if (!file_exists(CONFIG_PATH . '/config.php')) {
@@ -32,11 +15,6 @@ if (!file_exists(CONFIG_PATH . '/config.php')) {
 }
 $GLOBALS['config'] = require CONFIG_PATH . '/config.php';
 
-// --------------------------------------------------------------------
-// ERROR REPORTING
-// In produzione: NIENTE display_errors (i messaggi finirebbero al client
-// rivelando path e stack trace). Tutto loggato su /logs/errors/.
-// --------------------------------------------------------------------
 if (defined('APP_ENV') && APP_ENV === 'development') {
     error_reporting(E_ALL);
     ini_set('display_errors', '1');
@@ -46,33 +24,39 @@ if (defined('APP_ENV') && APP_ENV === 'development') {
     ini_set('log_errors', '1');
 }
 
-// --------------------------------------------------------------------
-// AUTOLOADER PSR-4 minimale per system/ e app/
-// --------------------------------------------------------------------
 spl_autoload_register(function ($class) {
-    // Prova prima /system/, poi /app/Controllers, /app/Models
     $candidates = [
         SYSTEM_PATH . '/' . $class . '.php',
         APP_PATH . '/Controllers/' . $class . '.php',
         APP_PATH . '/Models/' . $class . '.php',
     ];
     foreach ($candidates as $file) {
-        if (is_file($file)) {
-            require_once $file;
-            return;
-        }
+        if (is_file($file)) { require_once $file; return; }
     }
 });
 
-// --------------------------------------------------------------------
-// ERROR HANDLER GLOBALI
-// Catturano errori/eccezioni/fatal e li scrivono sui log categorizzati.
-// Previene leak di stack trace al client.
-// --------------------------------------------------------------------
+require_once SYSTEM_PATH . '/RateLimiter.php';
+
+function cleanup_old_logs(): void
+{
+    if (!defined('LOGS_PATH') || !is_dir(LOGS_PATH)) return;
+    $days = defined('LOG_ROTATION_DAYS') ? (int)LOG_ROTATION_DAYS : 30;
+    $cutoff = time() - ($days * 86400);
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator(LOGS_PATH, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $f) {
+        if (!$f->isFile()) continue;
+        if (strtolower($f->getExtension()) !== 'log') continue;
+        if ($f->getMTime() < $cutoff) @unlink($f->getPathname());
+    }
+}
+
+if (mt_rand(1, 100) === 1) cleanup_old_logs();
+
 set_error_handler(function ($severity, $message, $file, $line) {
     if (!(error_reporting() & $severity)) return false;
     Logger::error("PHP Error [$severity]: $message in $file:$line");
-    // Trasforma in eccezione per gestione uniforme
     throw new ErrorException($message, 0, $severity, $file, $line);
 });
 
@@ -95,13 +79,9 @@ register_shutdown_function(function () {
     }
 });
 
-// --------------------------------------------------------------------
-// SESSIONE SICURA
-// Cookie: HttpOnly (no JS), Secure (solo HTTPS), SameSite=Strict (no CSRF via link).
-// Fingerprint: lega la sessione a UA+IP → token rubato da altro dispositivo non funziona.
-// --------------------------------------------------------------------
 if (session_status() === PHP_SESSION_NONE) {
     $secure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+    $lifetime = defined('SESSION_LIFETIME') ? (int)SESSION_LIFETIME : 0;
     session_set_cookie_params([
         'lifetime' => 0,
         'path'     => '/',
@@ -110,11 +90,12 @@ if (session_status() === PHP_SESSION_NONE) {
         'httponly' => true,
         'samesite' => 'Strict',
     ]);
-    // Cookie prefix __Host- solo se HTTPS (richiede Secure + Path=/ + no Domain)
+    if ($lifetime > 0) {
+        ini_set('session.gc_maxlifetime', (string)$lifetime);
+    }
     session_name($secure ? '__Host-SID' : 'APPSID');
     session_start();
 
-    // Fingerprint binding (gap 3.8 auto-rilevato in Repo A OraSicurezza)
     $fp = hash('sha256',
         ($_SERVER['HTTP_USER_AGENT'] ?? '') . '|' .
         ($_SERVER['REMOTE_ADDR'] ?? '')
@@ -122,8 +103,8 @@ if (session_status() === PHP_SESSION_NONE) {
     if (!isset($_SESSION['_fp'])) {
         $_SESSION['_fp'] = $fp;
     } elseif (!hash_equals($_SESSION['_fp'], $fp)) {
-        // Possibile hijacking: distruggi sessione e logga
         Logger::security('Session fingerprint mismatch', [
+            'gdpr_sensitive' => 1,
             'ip' => $_SERVER['REMOTE_ADDR'] ?? '',
             'ua' => $_SERVER['HTTP_USER_AGENT'] ?? '',
         ]);
@@ -133,10 +114,10 @@ if (session_status() === PHP_SESSION_NONE) {
         die('Sessione non valida.');
     }
 
-    // Rigenera ID periodicamente (anti session-fixation)
+    $regenInterval = defined('SESSION_REGENERATE_ID') ? (int)SESSION_REGENERATE_ID : 1800;
     if (!isset($_SESSION['_born'])) {
         $_SESSION['_born'] = time();
-    } elseif (time() - $_SESSION['_born'] > 1800) { // 30 min
+    } elseif (time() - $_SESSION['_born'] > $regenInterval) {
         session_regenerate_id(true);
         $_SESSION['_born'] = time();
     }
