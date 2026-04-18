@@ -23,7 +23,7 @@ final class UserModel
             }
         }
         return Database::fetchOne(
-            'SELECT id, email, created_at FROM users WHERE id = ? LIMIT 1',
+            'SELECT id, email, created_at, totp_enabled FROM users WHERE id = ? LIMIT 1',
             [$id]
         );
     }
@@ -60,7 +60,7 @@ final class UserModel
     public static function verifyCredentials(string $email, string $plainPassword): ?array
     {
         $user = Database::fetchOne(
-            'SELECT id, email, password_hash FROM users WHERE email = ? LIMIT 1',
+            'SELECT id, email, password_hash, totp_enabled FROM users WHERE email = ? LIMIT 1',
             [$email]
         );
         if (!$user) {
@@ -102,5 +102,62 @@ final class UserModel
             [$userId]
         );
         return $affected > 0;
+    }
+
+    /* ---- Auth-module helpers ---- */
+
+    /**
+     * Internal lookup bypassing RLS — only for auth flows where the caller
+     * is establishing identity (login, magic-link, JWT validation).
+     * NEVER expose this method to controllers performing user-data reads.
+     */
+    public static function findByIdInternal(int $id): ?array
+    {
+        return Database::fetchOne(
+            'SELECT id, email, totp_enabled FROM users WHERE id = ? LIMIT 1',
+            [$id]
+        );
+    }
+
+    public static function setTotpSecret(int $userId, string $secret): void
+    {
+        Database::execute(
+            'UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?',
+            [$secret, $userId]
+        );
+    }
+
+    public static function enableTotp(int $userId): void
+    {
+        Database::execute(
+            'UPDATE users SET totp_enabled = 1 WHERE id = ?',
+            [$userId]
+        );
+    }
+
+    public static function disableTotp(int $userId): void
+    {
+        Database::execute(
+            'UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?',
+            [$userId]
+        );
+    }
+
+    public static function hasTotp(int $userId): bool
+    {
+        $row = Database::fetchOne(
+            'SELECT totp_enabled FROM users WHERE id = ? LIMIT 1',
+            [$userId]
+        );
+        return !empty($row) && (int)$row['totp_enabled'] === 1;
+    }
+
+    public static function getTotpSecret(int $userId): ?string
+    {
+        $row = Database::fetchOne(
+            'SELECT totp_secret FROM users WHERE id = ? LIMIT 1',
+            [$userId]
+        );
+        return $row['totp_secret'] ?? null;
     }
 }
