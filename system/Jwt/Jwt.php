@@ -73,10 +73,12 @@ final class Jwt
 
     private static function secret(): string
     {
-        $cfg = Config::get('jwt');
-        $secret = $cfg['secret_key'] ?? '';
+        // Lookup obbligatorio: se manca lancia eccezione (anche in production)
+        $secret = (string)Config::require('jwt.secret_key');
         if (strlen($secret) < 32) {
-            throw new RuntimeException('JWT secret_key not configured (min 32 chars).');
+            $msg = 'JWT secret_key troppo corto: minimo 32 caratteri.';
+            Logger::error($msg);
+            throw new RuntimeException($msg);
         }
         return $secret;
     }

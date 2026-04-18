@@ -15,31 +15,19 @@ if (!file_exists(CONFIG_PATH . '/config.php')) {
 }
 $GLOBALS['config'] = require CONFIG_PATH . '/config.php';
 
-final class Config
-{
-    public static function get(string $key, $default = null)
-    {
-        $cfg = $GLOBALS['config'] ?? [];
-        if (array_key_exists($key, $cfg)) return $cfg[$key];
-        if (strpos($key, '.') !== false) {
-            $parts = explode('.', $key);
-            $node = $cfg;
-            foreach ($parts as $p) {
-                if (!is_array($node) || !array_key_exists($p, $node)) return $default;
-                $node = $node[$p];
-            }
-            return $node;
-        }
-        return $default;
-    }
-}
+// Helper Config (usato da Jwt, Mailer, controller). Caricato esplicitamente
+// perché l'autoloader potrebbe non essere ancora registrato.
+require_once SYSTEM_PATH . '/Config.php';
 
 if (defined('APP_ENV') && APP_ENV === 'development') {
     error_reporting(E_ALL);
     ini_set('display_errors', '1');
+    ini_set('display_startup_errors', '1');
+    ini_set('log_errors', '1');
 } else {
     error_reporting(E_ALL);
     ini_set('display_errors', '0');
+    ini_set('display_startup_errors', '0');
     ini_set('log_errors', '1');
 }
 
