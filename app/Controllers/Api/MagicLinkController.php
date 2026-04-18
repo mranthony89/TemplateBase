@@ -3,20 +3,28 @@ if (!defined('SECURE_ACCESS')) die;
 
 /**
  * /api/magic/request POST {email}
- * /api/magic/verify  POST {token}
+ * /api/magic/verify  POST {token}  (or GET ?token=)
+ *
+ * Rate-limit policy (RateLimiter is fully static):
+ *   request : 5 req / 10 min / IP   key = 'api_magic_req_' . sha256(ip)
  */
 final class MagicLinkController extends BaseController
 {
     public function request(): void
     {
         if (!MAGIC_LINK_ENABLED) $this->json(['error' => 'feature_disabled'], 404);
-        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') $this->json(['error' => 'method_not_allowed'], 405);
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->json(['error' => 'method_not_allowed'], 405);
+        }
 
-        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
-        $rl = new RateLimiter('api_magic_req_' . hash('sha256', $ip), 5, 600);
-        if (!$rl->throttle()) $this->json(['error' => 'rate_limited', 'retry_after' => $rl->reset()], 429);
+        $ip  = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        $key = 'api_magic_req_' . hash('sha256', $ip);
+        if (!RateLimiter::throttle($key, 5, 600)) {
+            Logger::security('Magic-link rate-limited', ['gdpr_sensitive' => 1, 'ip' => $ip]);
+            $this->json(['error' => 'rate_limited'], 429);
+        }
 
-        $in = $this->getJsonInput();
+        $in    = $this->getJsonInput();
         $email = trim((string)($in['email'] ?? ''));
         if (!Validator::email($email)) $this->json(['error' => 'invalid_email'], 400);
 
@@ -31,14 +39,20 @@ final class MagicLinkController extends BaseController
             $body = "Per accedere clicca sul link (valido " . (MAGIC_LINK_EXPIRY / 60) . " minuti):\n\n$url\n\nSe non hai richiesto tu, ignora questa email.";
             try {
                 Mailer::send($email, 'Il tuo link di accesso', $body);
-            } catch (Throwable $e) {
-                Logger::error('Magic-link mail failed: ' . $e->getMessage());
+            } catch (\Throwable $e) {
+                Logger::error('Magic-link mail failed: ' . $e->getMessage(), [
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ]);
+                if (defined('APP_ENV') && APP_ENV === 'development') {
+                    throw $e; // loud in dev
+                }
             }
         } else {
             Logger::security('Magic-link requested for unknown email', ['gdpr_sensitive' => 1, 'email' => $email]);
         }
 
-        // Risposta sempre uguale per non rivelare se l'utente esiste
+        // Risposta uniforme per non rivelare se l'utente esiste
         $this->json(['ok' => true, 'message' => 'Se l\'email esiste, ti abbiamo inviato un link.']);
     }
 
@@ -53,7 +67,9 @@ final class MagicLinkController extends BaseController
         } else {
             $token = (string)($_GET['token'] ?? '');
         }
-        if ($token === '' || !ctype_xdigit($token)) $this->json(['error' => 'invalid_token'], 400);
+        if ($token === '' || !ctype_xdigit($token)) {
+            $this->json(['error' => 'invalid_token'], 400);
+        }
 
         $userId = MagicLinkModel::consume($token);
         if (!$userId) $this->json(['error' => 'invalid_or_used'], 401);

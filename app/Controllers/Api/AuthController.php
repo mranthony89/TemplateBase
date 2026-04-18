@@ -6,23 +6,33 @@ if (!defined('SECURE_ACCESS')) die;
  * /api/auth/refresh  POST {refresh_token}
  * /api/auth/logout   POST  (Bearer)
  * /api/auth/me       GET   (Bearer)
+ *
+ * Rate-limit policy (RateLimiter is fully static):
+ *   login : 10 req / 5 min / IP   key = 'api_login_' . sha256(ip)
  */
 final class AuthController extends BaseController
 {
     public function login(): void
     {
-        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') $this->json(['error' => 'method_not_allowed'], 405);
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->json(['error' => 'method_not_allowed'], 405);
+        }
 
-        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
-        $rl = new RateLimiter('api_login_' . hash('sha256', $ip), 10, 300);
-        if (!$rl->throttle()) $this->json(['error' => 'rate_limited', 'retry_after' => $rl->reset()], 429);
+        $ip  = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        $key = 'api_login_' . hash('sha256', $ip);
+        if (!RateLimiter::throttle($key, 10, 300)) {
+            Logger::security('API login rate-limited', ['gdpr_sensitive' => 1, 'ip' => $ip]);
+            $this->json(['error' => 'rate_limited'], 429);
+        }
 
-        $in = $this->getJsonInput();
+        $in    = $this->getJsonInput();
         $email = trim((string)($in['email'] ?? ''));
         $pass  = (string)($in['password'] ?? '');
         $totp  = isset($in['totp']) ? (string)$in['totp'] : null;
 
-        if (!Validator::email($email) || $pass === '') $this->json(['error' => 'invalid_input'], 400);
+        if (!Validator::email($email) || $pass === '') {
+            $this->json(['error' => 'invalid_input'], 400);
+        }
 
         $user = UserModel::verifyCredentials($email, $pass);
         if (!$user) {
@@ -31,7 +41,9 @@ final class AuthController extends BaseController
         }
 
         if (!empty($user['totp_enabled'])) {
-            if ($totp === null || $totp === '') $this->json(['error' => 'totp_required'], 401);
+            if ($totp === null || $totp === '') {
+                $this->json(['error' => 'totp_required'], 401);
+            }
             $secret = UserModel::getTotpSecret((int)$user['id']);
             if (!$secret || !Totp::verify($secret, $totp)) {
                 Logger::security('API TOTP failed', ['gdpr_sensitive' => 1, 'user_id' => (int)$user['id']]);
@@ -39,14 +51,19 @@ final class AuthController extends BaseController
             }
         }
 
+        // login OK — azzera il counter di brute-force per questo IP
+        RateLimiter::reset($key);
+
         $this->issueTokens((int)$user['id'], $user['email']);
     }
 
     public function refresh(): void
     {
-        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') $this->json(['error' => 'method_not_allowed'], 405);
+        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+            $this->json(['error' => 'method_not_allowed'], 405);
+        }
 
-        $in = $this->getJsonInput();
+        $in    = $this->getJsonInput();
         $token = (string)($in['refresh_token'] ?? '');
         if ($token === '') $this->json(['error' => 'missing_refresh_token'], 400);
 
@@ -58,6 +75,7 @@ final class AuthController extends BaseController
         $oldJti = (string)$payload['jti'];
 
         if (!RefreshTokenModel::isValid($userId, $oldJti)) {
+            // possibile token-reuse attack: revoca tutto
             Logger::security('Refresh-token reuse or revoked', ['user_id' => $userId]);
             RefreshTokenModel::revokeAllForUser($userId);
             $this->json(['error' => 'token_revoked'], 401);
