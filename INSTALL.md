@@ -6,9 +6,9 @@ Checklist passo-passo. Completa in ordine; salta una voce solo se non applicabil
 
 ## 1. Upload dei file
 
-- [ ] Carica `system/`, `app/`, `config/`, `logs/` nella HOME utente cPanel (es. `/home/utente/`).
+- [ ] Carica `system/`, `app/`, `config/`, `logs/`, `database/`, `docs/` nella HOME utente cPanel (es. `/home/utente/`).
 - [ ] Carica il contenuto di `public/` nella cartella Document Root (vedi punto 3).
-- [ ] Carica `AUDIT_REPORT.md`, `README.md`, `INSTALL.md` al livello HOME (facoltativo ma consigliato per documentazione on-site).
+- [ ] Carica `AUDIT_REPORT.md`, `README.md`, `INSTALL.md` al livello HOME (facoltativo).
 
 Struttura attesa sul server:
 
@@ -18,6 +18,8 @@ Struttura attesa sul server:
   ├── app/
   ├── config/
   ├── logs/
+  ├── database/
+  ├── docs/
   └── public/         ← oppure punta il Document Root qui (punto 3)
 ```
 
@@ -35,7 +37,11 @@ Struttura attesa sul server:
       ```
       php -r "echo bin2hex(random_bytes(32));"
       ```
-  - eventuale `mail.from_address`
+  - `jwt.secret_key` — stesso comando, **almeno 32 char** (richiesto dalla classe `Jwt`)
+  - `magic_link.secret_key` — stesso comando
+  - `app.base_url` — URL pubblico (es. `https://example.com`) usato per i link delle email
+  - `mail.from.address` / `mail.from.name`
+  - `mail.smtp.{host,port,username,password,encryption}` (per magic-link/2FA recovery)
 - [ ] Permessi restrittivi:
       ```
       chmod 600 config/config.php
@@ -44,8 +50,6 @@ Struttura attesa sul server:
 ---
 
 ## 3. Document Root su `public/`
-
-Due strade a seconda del pannello:
 
 **Opzione A — cPanel: Domains → Edit Document Root**
 - [ ] Imposta Document Root del dominio su `/home/utente/public`.
@@ -56,7 +60,7 @@ Due strade a seconda del pannello:
       mv public/* public_html/
       mv public/.htaccess public_html/
       ```
-- [ ] Aggiorna in `system/bootstrap.php` la costante:
+- [ ] Aggiorna in `system/bootstrap.php`:
       ```
       define('PUBLIC_PATH', ROOT_PATH . '/public_html');
       ```
@@ -65,81 +69,125 @@ Due strade a seconda del pannello:
 
 ## 4. Permessi cartelle
 
-- [ ] `chmod 750 system app config`
-- [ ] `chmod 770 logs` (il web server deve poter scrivere)
+- [ ] `chmod 750 system app config database docs`
+- [ ] `chmod 770 logs` (web server deve scrivere)
 - [ ] `chmod 750 logs/security logs/debug logs/db logs/errors`
-- [ ] Verifica l'owner: `chown -R utente:utente system app config logs`
+- [ ] Verifica owner: `chown -R utente:utente system app config logs database docs`
 
 ---
 
-## 5. Database
+## 5. PHPMailer (richiesto solo se Magic Link / email attive)
+
+- [ ] Scarica l'ultima release stabile da <https://github.com/PHPMailer/PHPMailer/releases>.
+- [ ] Estrai e copia **solo** il contenuto della cartella `src/` in:
+      ```
+      system/lib/PHPMailer/src/
+      ```
+- [ ] Verifica che esistano:
+      ```
+      system/lib/PHPMailer/src/PHPMailer.php
+      system/lib/PHPMailer/src/SMTP.php
+      system/lib/PHPMailer/src/Exception.php
+      ```
+- [ ] In assenza di questi file, `Mailer::send()` lancerà `RuntimeException`.
+      Se non hai bisogno delle email, imposta `MAGIC_LINK_ENABLED = false` in `constants.php`.
+
+Vedi anche `system/lib/PHPMailer/README.md`.
+
+---
+
+## 6. Database
 
 - [ ] Crea il database da cPanel → MySQL Databases (es. `utente_tbase`).
-- [ ] Crea lo schema minimo:
+- [ ] Crea lo schema base:
       ```sql
       CREATE TABLE users (
-        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        email VARCHAR(255) UNIQUE NOT NULL,
+        id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        email         VARCHAR(255) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       ```
+- [ ] **Auth module** — applica la migration:
+      ```
+      mysql -u utente_user -p utente_tbase < database/auth_module.sql
+      ```
+      Aggiunge colonne `totp_secret`, `totp_enabled` a `users` e crea le tabelle
+      `refresh_tokens`, `jwt_blacklist`, `magic_links`. Vedi `docs/AUTH_MODULE.md`.
 
 ---
 
-## 6. Test connessione DB
+## 7. Test connessione DB
 
-- [ ] Apri temporaneamente un file di smoke test (poi cancellalo):
+- [ ] Smoke test (cancellalo subito dopo):
       ```php
       <?php
       require_once dirname(__DIR__) . '/system/bootstrap.php';
       $row = Database::fetchOne('SELECT NOW() AS now');
       echo 'DB OK: ' . $row['now'];
       ```
-- [ ] Visita l'URL del file e verifica che stampi il timestamp.
+- [ ] Visita l'URL e verifica.
 - [ ] **Cancella il file di test.**
 
 ---
 
-## 7. Ambiente production
+## 8. Ambiente production
 
-- [ ] Imposta in `config/constants.php`:
+- [ ] In `config/constants.php`:
       ```
       define('APP_ENV', 'production');
       ```
-- [ ] Verifica che le pagine di errore non mostrino stack trace.
+- [ ] Verifica che gli errori non mostrino stack trace.
 
 ---
 
-## 8. HTTPS e HSTS
+## 9. HTTPS e HSTS
 
-- [ ] Attiva il certificato SSL (Let's Encrypt in cPanel).
-- [ ] Forza il redirect HTTP → HTTPS (cPanel: Force HTTPS toggle).
-- [ ] Conferma che l'header `Strict-Transport-Security` sia presente (già configurato in `public/.htaccess`).
+- [ ] Attiva SSL (Let's Encrypt in cPanel).
+- [ ] Forza redirect HTTP → HTTPS.
+- [ ] Conferma `Strict-Transport-Security` nei response header.
 
 ---
 
-## 9. CSP & hardening (opzionale ma consigliato)
+## 10. CSP & hardening (opzionale ma consigliato)
 
-- [ ] Rivedi la CSP in `public/.htaccess`: rimuovi `'unsafe-inline'` dove possibile, passa a nonce per `<script>`.
+- [ ] Rivedi la CSP in `public/.htaccess`, rimuovi `'unsafe-inline'`, passa a nonce.
 - [ ] Aggiungi `integrity=` (SRI) ai tag `<script>` verso CDN.
 
 ---
 
-## 10. Cron facoltativo
+## 11. Cron — pulizia automatica
 
-La pulizia log avviene con probabilità 1% per richiesta. Per garantirla:
+La pulizia log gira con probabilità 1% per richiesta. Per garantire purging
+costante (log + token scaduti):
+
+- [ ] Crea `system/cron/auth_purge.php`:
+      ```php
+      <?php
+      require __DIR__ . '/../bootstrap.php';
+      cleanup_old_logs();
+      RefreshTokenModel::purgeExpired();
+      JwtBlacklistModel::purgeExpired();
+      MagicLinkModel::purgeExpired();
+      ```
 - [ ] Cron giornaliero:
       ```
-      0 3 * * * /usr/bin/php /home/utente/system/bootstrap.php >/dev/null 2>&1
+      0 3 * * * /usr/bin/php /home/utente/system/cron/auth_purge.php >/dev/null 2>&1
       ```
-  (richiede piccolo adattamento: wrappare `cleanup_old_logs()` in uno script CLI dedicato).
 
 ---
 
-## Verifica finale
+## 12. Verifica finale
 
-- [ ] `https://tuodominio.it/` risponde con la home del template.
+- [ ] `https://tuodominio.it/` → home del template.
 - [ ] `https://tuodominio.it/system/bootstrap.php` → **403** (o 404).
 - [ ] `https://tuodominio.it/config/config.php` → **403** (o 404).
-- [ ] Gli header di sicurezza sono presenti (check con `curl -I https://tuodominio.it/`).
+- [ ] `https://tuodominio.it/database/auth_module.sql` → **403** (o 404).
+- [ ] `https://tuodominio.it/system/lib/PHPMailer/src/PHPMailer.php` → **403** (o 404).
+- [ ] Header sicurezza presenti: `curl -I https://tuodominio.it/`.
+- [ ] (Se auth module attivo) test API:
+      ```
+      curl -X POST https://tuodominio.it/api/auth/login \
+        -H 'Content-Type: application/json' \
+        -d '{"email":"u@e.it","password":"x"}'
+      ```
