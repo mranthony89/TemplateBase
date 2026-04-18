@@ -31,17 +31,17 @@ Struttura attesa sul server:
       ```
       cp config/config.template.php config/config.php
       ```
-- [ ] Edita `config/config.php` con:
-  - credenziali database (`host`, `name`, `user`, `pass`)
+- [ ] Edita `config/config.php` (letto tramite `Config::get('chiave.puntata')`). Compila:
+  - credenziali database (`db.host`, `db.name`, `db.user`, `db.pass`)
   - `app_secret` — generalo con:
       ```
       php -r "echo bin2hex(random_bytes(32));"
       ```
-  - `jwt.secret_key` — stesso comando, **almeno 32 char** (richiesto dalla classe `Jwt`)
+  - `jwt.secret_key` — stesso comando, **almeno 32 char** (`Config::require('jwt.secret_key')` lancia eccezione se manca o è troppo corto, anche in production)
   - `magic_link.secret_key` — stesso comando
   - `app.base_url` — URL pubblico (es. `https://example.com`) usato per i link delle email
   - `mail.from.address` / `mail.from.name`
-  - `mail.smtp.{host,port,username,password,encryption}` (per magic-link/2FA recovery)
+  - `mail.smtp.{host,port,username,password,encryption}` (per magic-link/recovery)
 - [ ] Permessi restrittivi:
       ```
       chmod 600 config/config.php
@@ -78,6 +78,8 @@ Struttura attesa sul server:
 
 ## 5. PHPMailer (richiesto solo se Magic Link / email attive)
 
+Il percorso atteso è **`system/lib/PHPMailer/src/`** (struttura upstream originale).
+
 - [ ] Scarica l'ultima release stabile da <https://github.com/PHPMailer/PHPMailer/releases>.
 - [ ] Estrai e copia **solo** il contenuto della cartella `src/` in:
       ```
@@ -89,10 +91,19 @@ Struttura attesa sul server:
       system/lib/PHPMailer/src/SMTP.php
       system/lib/PHPMailer/src/Exception.php
       ```
-- [ ] In assenza di questi file, `Mailer::send()` lancerà `RuntimeException`.
-      Se non hai bisogno delle email, imposta `MAGIC_LINK_ENABLED = false` in `constants.php`.
+- [ ] Se i file mancano, `Mailer::send()` lancia `RuntimeException` con l'elenco
+      dei path mancanti (in dev l'eccezione viene propagata e mostrata dal
+      front-controller; in prod viene loggata e l'endpoint risponde `false`).
+      Se non hai bisogno delle email, imposta `MAGIC_LINK_ENABLED = false`
+      in `config/constants.php`.
 
 Vedi anche `system/lib/PHPMailer/README.md`.
+
+### Test invio SMTP (facoltativo)
+
+In `APP_ENV='development'` `Mailer` abilita `SMTPDebug=2` e il transcript SMTP
+viene scritto in `logs/debug/debug-YYYY-MM-DD.log`. Utile per verificare
+credenziali/STARTTLS/SSL della prima volta.
 
 ---
 
@@ -131,13 +142,28 @@ Vedi anche `system/lib/PHPMailer/README.md`.
 
 ---
 
-## 8. Ambiente production
+## 8. Development vs Production
 
-- [ ] In `config/constants.php`:
-      ```
-      define('APP_ENV', 'production');
-      ```
-- [ ] Verifica che gli errori non mostrino stack trace.
+Il template distingue i due ambienti tramite la costante `APP_ENV` in
+`config/constants.php`.
+
+### Development (`'development'`)
+- `error_reporting(E_ALL)`, `display_errors=1`, `display_startup_errors=1`.
+- Le API risposte `5xx` contengono `exception`, `message`, `file`, `line`, `trace`.
+- Le view errore HTML mostrano classe eccezione, file:line e stacktrace.
+- `Mailer` abilita `SMTPDebug=2` con output via `Logger::debug`.
+- Tutti i `catch` nei modelli/controller ri-lanciano dopo aver loggato.
+
+### Production (`'production'`)
+- `display_errors=0`; error log sempre attivo (`log_errors=1`).
+- Le API rispondono con `{"error":"internal_error"}` generico.
+- `JwtBlacklistModel::isBlacklisted` è fail-closed: se il DB fallisce tratta il
+  token come revocato.
+- `Mailer::send` ritorna `false` e logga, senza propagare.
+
+Per passare in production:
+- [ ] `define('APP_ENV', 'production');`
+- [ ] Testa: `curl https://tuodominio.it/api/auth/login` NON deve contenere stacktrace.
 
 ---
 
@@ -191,3 +217,4 @@ costante (log + token scaduti):
         -H 'Content-Type: application/json' \
         -d '{"email":"u@e.it","password":"x"}'
       ```
+- [ ] In production la risposta non deve contenere `file`, `line` o `trace`.
