@@ -34,57 +34,39 @@ final class Jwt
     public static function decode(string $token): ?array
     {
         $parts = explode('.', $token);
-        if (count($parts) !== 3) {
-            return null;
-        }
+        if (count($parts) !== 3) return null;
         [$h64, $p64, $s64] = $parts;
 
         $header = json_decode(self::base64UrlDecode($h64), true);
         $payload = json_decode(self::base64UrlDecode($p64), true);
         $sig = self::base64UrlDecode($s64);
 
-        if (!is_array($header) || !is_array($payload) || $sig === false) {
-            return null;
-        }
-        if (($header['alg'] ?? '') !== 'HS256') {
-            return null;
-        }
+        if (!is_array($header) || !is_array($payload) || $sig === false) return null;
+        if (($header['alg'] ?? '') !== 'HS256') return null;
 
         $expected = hash_hmac('sha256', $h64 . '.' . $p64, self::secret(), true);
-        if (!hash_equals($expected, $sig)) {
-            return null;
-        }
+        if (!hash_equals($expected, $sig)) return null;
 
         $now = time();
-        if (isset($payload['nbf']) && $now < (int)$payload['nbf']) {
-            return null;
-        }
-        if (isset($payload['exp']) && $now >= (int)$payload['exp']) {
-            return null;
-        }
-        if (isset($payload['iss']) && $payload['iss'] !== JWT_ISSUER) {
-            return null;
-        }
-        if (!empty($payload['jti']) && self::isBlacklisted($payload['jti'])) {
-            return null;
-        }
+        if (isset($payload['nbf']) && $now < (int)$payload['nbf']) return null;
+        if (isset($payload['exp']) && $now >= (int)$payload['exp']) return null;
+        if (isset($payload['iss']) && $payload['iss'] !== JWT_ISSUER) return null;
+        if (!empty($payload['jti']) && self::isBlacklisted($payload['jti'])) return null;
 
         return $payload;
     }
 
     public static function blacklist(string $jti, int $exp): void
     {
-        $model = new JwtBlacklistModel();
-        $model->add($jti, $exp);
+        JwtBlacklistModel::add($jti, $exp);
     }
 
     public static function isBlacklisted(string $jti): bool
     {
-        $model = new JwtBlacklistModel();
-        return $model->isBlacklisted($jti);
+        return JwtBlacklistModel::isBlacklisted($jti);
     }
 
-    private static function generateJti(): string
+    public static function generateJti(): string
     {
         return bin2hex(random_bytes(16));
     }
