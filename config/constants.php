@@ -23,6 +23,10 @@ define('LOG_EMAIL_HASH_ALGO', 'sha256');
 // Rate Limiting
 define('RATE_LIMIT_MAX', 60);
 define('RATE_LIMIT_WINDOW', 60);
+// Eta' massima dei file in logs/ratelimit/ prima della cancellazione da
+// parte di system/cron/auth_purge.php. Indipendente dalla finestra di
+// throttling: serve solo a non lasciare crescere la cartella.
+define('RATE_LIMIT_MAX_AGE_DAYS', 7);
 
 // CSRF
 define('CSRF_TOKEN_LENGTH', 32);
@@ -37,7 +41,7 @@ define('JWT_ALGO', 'HS256');
 define('JWT_ACCESS_EXPIRY', 900);       // 15 minuti
 define('JWT_REFRESH_EXPIRY', 604800);   // 7 giorni
 define('JWT_ISSUER', APP_NAME);
-define('JWT_BLACKLIST_DRIVER', 'database'); // 'database' o 'file'
+define('JWT_BLACKLIST_DRIVER', 'database'); // solo 'database' supportato
 
 // Magic Link
 define('MAGIC_LINK_ENABLED', true);
