@@ -1,51 +1,62 @@
 <?php
 if (!defined('SECURE_ACCESS')) die;
 
-/**
- * app/Models/UserModel.php
- * --------------------------------------------------------------------
- * Modello utente con ROW-LEVEL SECURITY forzata.
- *
- * Ogni metodo che accede a dati utente RICHIEDE due parametri:
- *   - $targetId:    il record da leggere/modificare
- *   - $currentUser: l'utente che sta facendo la richiesta
- *
- * Anche quando i due coincidono (utente legge i propri dati), la
- * firma rende impossibile dimenticarsi del check di ownership.
- * --------------------------------------------------------------------
- */
 final class UserModel
 {
-    /**
-     * Trova un utente per ID, ma solo se appartiene al richiedente.
-     * Per record personali: $targetId === $currentUserId.
-     * Per record condivisi: la query può essere estesa (JOIN permissions).
-     */
     public static function findByIdForUser(int $targetId, int $currentUserId): ?array
     {
-        // Il WHERE id = ? AND id = ? è volutamente ridondante per rendere
-        // ESPLICITO che qualsiasi query utente include SEMPRE l'owner check.
-        // In tabelle relazionali (es. posts) sarebbe: WHERE id = ? AND user_id = ?
         return Database::fetchOne(
             'SELECT id, email, created_at FROM users WHERE id = ? AND id = ? LIMIT 1',
             [$targetId, $currentUserId]
         );
     }
 
-    /** Creazione utente — password hashata con bcrypt (PASSWORD_DEFAULT) */
+    public static function findById(int $id, bool $skipRls = false, ?int $currentUserId = null): ?array
+    {
+        if (!$skipRls) {
+            if ($currentUserId === null || $currentUserId !== $id) {
+                Logger::security('UserModel::findById RLS blocked', [
+                    'target_id'       => $id,
+                    'current_user_id' => $currentUserId,
+                ]);
+                return null;
+            }
+        }
+        return Database::fetchOne(
+            'SELECT id, email, created_at FROM users WHERE id = ? LIMIT 1',
+            [$id]
+        );
+    }
+
+    public static function findByEmail(string $email): ?array
+    {
+        return Database::fetchOne(
+            'SELECT id, email, created_at FROM users WHERE email = ? LIMIT 1',
+            [$email]
+        );
+    }
+
+    public static function exists(string $email): bool
+    {
+        $row = Database::fetchOne(
+            'SELECT 1 AS e FROM users WHERE email = ? LIMIT 1',
+            [$email]
+        );
+        return $row !== null;
+    }
+
     public static function create(string $email, string $plainPassword): int
     {
-        $hash = password_hash($plainPassword, PASSWORD_DEFAULT);
+        $opts = [];
+        if (defined('PASSWORD_COST')) $opts['cost'] = (int)PASSWORD_COST;
+        $algo = defined('PASSWORD_ALGO') ? PASSWORD_ALGO : PASSWORD_DEFAULT;
+        $hash = password_hash($plainPassword, $algo, $opts);
         return Database::insert(
             'INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, NOW())',
             [$email, $hash]
         );
     }
 
-    /**
-     * Verifica credenziali in modo timing-safe.
-     * password_verify usa internamente un confronto costante-tempo.
-     */
     public static function verifyCredentials(string $email, string $plainPassword): ?array
     {
         $user = Database::fetchOne(
@@ -53,7 +64,6 @@ final class UserModel
             [$email]
         );
         if (!$user) {
-            // Eseguo comunque un hash fake per evitare user-enumeration via timing
             password_verify($plainPassword, '$2y$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidiu');
             return null;
         }
@@ -64,12 +74,33 @@ final class UserModel
         return $user;
     }
 
-    /** UPDATE atomico con RLS (WHERE id = ?) */
     public static function updateEmail(int $userId, string $newEmail): int
     {
         return Database::execute(
             'UPDATE users SET email = ? WHERE id = ?',
             [$newEmail, $userId]
         );
+    }
+
+    public static function updatePassword(int $userId, string $newPlainPassword): bool
+    {
+        $opts = [];
+        if (defined('PASSWORD_COST')) $opts['cost'] = (int)PASSWORD_COST;
+        $algo = defined('PASSWORD_ALGO') ? PASSWORD_ALGO : PASSWORD_DEFAULT;
+        $hash = password_hash($newPlainPassword, $algo, $opts);
+        $affected = Database::execute(
+            'UPDATE users SET password_hash = ? WHERE id = ?',
+            [$hash, $userId]
+        );
+        return $affected > 0;
+    }
+
+    public static function delete(int $userId): bool
+    {
+        $affected = Database::execute(
+            'DELETE FROM users WHERE id = ?',
+            [$userId]
+        );
+        return $affected > 0;
     }
 }
