@@ -1,0 +1,10 @@
+# Ignore il vero config (contiene credenziali). Il .template va committato.
+/config/config.php
+
+# Log runtime (rotazione giornaliera lascia file con date variabili)
+/logs/**/*.log
+
+# File temporanei
+*.swp
+.DS_Store
+Thumbs.db

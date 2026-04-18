@@ -1,0 +1,28 @@
+# Doppio layer: deny accesso + disabilita esecuzione script
+# Se un attaccante riuscisse a caricare un file .php travestito da
+# log (es. shell.log.php), questo .htaccess impedisce comunque
+# l'esecuzione come PHP.
+
+Require all denied
+
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+</IfModule>
+
+# Disabilita handler PHP per questa directory
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag engine off
+</IfModule>
+
+# Rimuovi handler per qualsiasi estensione eseguibile
+RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8 .pl .py .jsp .asp .sh .cgi
+RemoveType .php .phtml .php3 .php4 .php5 .php7 .php8 .pl .py .jsp .asp .sh .cgi
+
+# Forza text/plain per qualsiasi file
+<FilesMatch ".*">
+    ForceType text/plain
+</FilesMatch>

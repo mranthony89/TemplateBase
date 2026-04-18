@@ -1,0 +1,13 @@
+# Blocco accesso HTTP totale alla cartella /system/
+# Questa cartella contiene il nucleo del framework e NON deve mai essere
+# raggiungibile via URL. Difesa in profondità: la cartella è già fuori da
+# public_html, ma se per errore venisse spostata o se un alias venisse
+# creato, questo .htaccess garantisce il blocco.
+
+Require all denied
+
+# Fallback per versioni Apache 2.2
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+</IfModule>
