@@ -1,0 +1,11 @@
+# Blocco accesso HTTP a /app/
+# Controllers, Models e Views NON devono essere raggiungibili direttamente:
+# tutte le richieste passano dal front controller public_html/index.php
+# che carica i controller via Router.
+
+Require all denied
+
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+</IfModule>
