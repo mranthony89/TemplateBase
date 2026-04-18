@@ -28,13 +28,14 @@ Audit comparativo di partenza: [`AUDIT_REPORT.md`](./AUDIT_REPORT.md) · Checkli
 │
 ├── system/                          # Nucleo (deny-all)
 │   ├── .htaccess
-│   ├── bootstrap.php                # Costanti, autoloader, sessione, cleanup log
+│   ├── bootstrap.php                # Costanti, autoloader, sessione, cleanup log, loud-debug in dev
 │   ├── Logger.php                   # Log GDPR + rotazione giornaliera + sottocartelle
 │   ├── Database.php                 # MySQLi singleton + prepared + auto-types
 │   ├── Security.php                 # h(), CSRF, Validator
+│   ├── Config.php                   # Dotted-key wrapper su $GLOBALS['config']
 │   ├── Router.php                   # Convention-based + /api/*
-│   ├── RateLimiter.php              # Throttle filesystem-based
-│   ├── Mailer.php                   # PHPMailer wrapper (SMTP)
+│   ├── RateLimiter.php              # Throttle filesystem-based (API statica)
+│   ├── Mailer.php                   # PHPMailer wrapper (SMTP) + SMTPDebug in dev
 │   ├── Jwt/
 │   │   └── Jwt.php                  # HS256 + JTI + blacklist
 │   ├── Security/
@@ -45,7 +46,7 @@ Audit comparativo di partenza: [`AUDIT_REPORT.md`](./AUDIT_REPORT.md) · Checkli
 ├── app/                             # Codice app (deny-all)
 │   ├── .htaccess
 │   ├── Controllers/
-│   │   ├── BaseController.php       # + requireJwt + getJsonInput
+│   │   ├── BaseController.php       # + requireJwt + getJsonInput + jsonError
 │   │   ├── HomeController.php
 │   │   ├── DashboardController.php
 │   │   └── Api/
@@ -53,9 +54,9 @@ Audit comparativo di partenza: [`AUDIT_REPORT.md`](./AUDIT_REPORT.md) · Checkli
 │   │       ├── MagicLinkController.php
 │   │       └── TwoFactorController.php
 │   ├── Models/
-│   │   ├── UserModel.php            # + TOTP helpers
+│   │   ├── UserModel.php            # + TOTP helpers + findByIdInternal
 │   │   ├── RefreshTokenModel.php
-│   │   ├── JwtBlacklistModel.php
+│   │   ├── JwtBlacklistModel.php    # fail-closed in production
 │   │   └── MagicLinkModel.php
 │   └── Views/
 │       └── home.php
@@ -76,7 +77,7 @@ Audit comparativo di partenza: [`AUDIT_REPORT.md`](./AUDIT_REPORT.md) · Checkli
 │
 └── public/                          # Document Root
     ├── .htaccess                    # Routing + CSP + security headers
-    └── index.php                    # Front controller
+    └── index.php                    # Front controller + global try/catch
 ```
 
 ---
@@ -104,7 +105,7 @@ Array PHP con sezioni `db`, `app_secret`, `app.base_url`, `jwt`, `magic_link`, `
 
 | Costante | Scopo |
 | --- | --- |
-| `APP_ENV` | `development` o `production`. |
+| `APP_ENV` | `development` o `production`. In dev: `display_errors=1`, `display_startup_errors=1`, tracce complete. |
 | `MAX_LOGIN_ATTEMPTS` / `LOGIN_TIMEOUT_MINUTES` | Lockout login. |
 | `SESSION_LIFETIME` / `SESSION_REGENERATE_ID` | Session policy. |
 | `PASSWORD_ALGO` / `PASSWORD_COST` | Argon2id default. |
@@ -113,8 +114,25 @@ Array PHP con sezioni `db`, `app_secret`, `app.base_url`, `jwt`, `magic_link`, `
 | `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW` | Throttle base. |
 | `CSRF_TOKEN_LENGTH` / `CSRF_EXPIRY` | CSRF policy. |
 | `JWT_ACCESS_EXPIRY` / `JWT_REFRESH_EXPIRY` | TTL token. |
+| `JWT_BLACKLIST_DRIVER` | Attualmente solo `database` supportato. |
 | `MAGIC_LINK_ENABLED` / `MAGIC_LINK_EXPIRY` | Passwordless. |
 | `TOTP_ENABLED` / `TOTP_DIGITS` / `TOTP_PERIOD` | 2FA. |
+
+---
+
+## Config helper (dotted-key)
+
+`system/Config.php` espone tre metodi statici read-only:
+
+```php
+$db   = Config::get('db');                            // array intero
+$port = Config::get('mail.smtp.port', 587);           // default fallback
+$key  = Config::require('jwt.secret_key');            // lancia se manca (anche in prod)
+$hasSmtp = Config::has('mail.smtp.host');
+```
+
+`Config::require` viene usato da `Jwt::secret()` per garantire che la secret key
+sia sempre presente: senza di essa il modulo JWT non parte.
 
 ---
 
@@ -128,11 +146,16 @@ Pseudonymization automatica di `email`, `ip`, `user_ip`, `client_ip`, `remote_ad
 
 ## Rate Limiting
 
-Vedi `system/RateLimiter.php` — filesystem-based, atomic write con `LOCK_EX`.
+`system/RateLimiter.php` — filesystem-based, atomic write con `LOCK_EX`, **API interamente statica**:
 
 ```php
-$rl = new RateLimiter('login:' . $ip);
-if (!$rl->throttle()) { http_response_code(429); die('Too many requests'); }
+$key = 'login:' . hash('sha256', $_SERVER['REMOTE_ADDR'] ?? '');
+if (!RateLimiter::throttle($key, 10, 300)) {
+    http_response_code(429);
+    die('Too many requests');
+}
+// ...dopo successo
+RateLimiter::reset($key);
 ```
 
 ---
@@ -141,6 +164,14 @@ if (!$rl->throttle()) { http_response_code(429); die('Too many requests'); }
 
 ### CSRF, CSP, RLS, Sessione, Auth password
 (invariati rispetto al template base — vedi sezioni dedicate sopra)
+
+### Debug & error handling
+
+- **Dev (`APP_ENV='development'`)**: `error_reporting(E_ALL)`, `display_errors=1`, `display_startup_errors=1`. Nessun `@` soppressore e nessun catch vuoto: ogni `catch` logga tramite `Logger::error()` e ri-lancia l'eccezione.
+- **`public/index.php`** racchiude `Router::dispatch()` in un try/catch globale. Se la richiesta è `/api/*` risponde con JSON, altrimenti con HTML. In dev il body/HTML include `exception`, `message`, `file`, `line`, `trace`.
+- **`BaseController::jsonError($status, $errorKey, ?Throwable $e, array $extra)`** — helper per emettere errori JSON arricchiti in dev.
+- **Fail-closed**: `JwtBlacklistModel::isBlacklisted()` ritorna `true` se il DB fallisce in production (impossibile lasciar passare un token revocato). In dev lancia.
+- **`Mailer`** abilita `SMTPDebug=2` in dev con output via `Logger::debug`; ri-lancia l'eccezione su send failure in dev.
 
 ### Auth Module (estensione modulare)
 
@@ -155,7 +186,7 @@ Caratteristiche:
 - Blacklist JTI in DB (purga via cron).
 - Magic-link: token in chiaro inviato per email, **solo** sha256 in DB, single-use atomico.
 - TOTP RFC 6238 (Google Authenticator), secret base32 in DB.
-- Rate limit per IP su login/magic.
+- Rate limit per IP su login/magic (static API).
 - Logging GDPR su tutte le failure.
 
 Documentazione completa: [`docs/AUTH_MODULE.md`](./docs/AUTH_MODULE.md). Schema DB: [`database/auth_module.sql`](./database/auth_module.sql).
@@ -181,7 +212,11 @@ final class ReportController extends BaseController {
 final class UsersController extends BaseController {
     public function me(): void {
         $payload = $this->requireJwt();
-        $user = UserModel::findByIdInternal((int)$payload['user_id']);
+        try {
+            $user = UserModel::findByIdInternal((int)$payload['user_id']);
+        } catch (\Throwable $e) {
+            $this->jsonError(500, 'db_error', $e);
+        }
         $this->json(['user' => $user]);
     }
 }
@@ -196,9 +231,12 @@ Aggiungi `'users' => 'UsersController'` nella resourceMap di `Router::dispatchAp
 - **Form POST**: `<?= CSRF::field() ?>` + `$this->requireCsrf()`
 - **Query**: `Database::fetchOne/fetchAll/insert/execute`
 - **Log**: `Logger::security|debug|db|error($msg, $context)`
+- **Config**: `Config::get('a.b.c', $default)` / `Config::require('jwt.secret_key')`
+- **Rate limit**: `RateLimiter::throttle($key, $max, $window)` / `RateLimiter::reset($key)`
 - **JWT**: `Jwt::encode($payload, JWT_ACCESS_EXPIRY)` / `Jwt::decode($token)`
 - **TOTP**: `Totp::generateSecret()` / `Totp::verify($secret, $code)`
 - **Email**: `Mailer::send($to, $subject, $body)`
+- **API error**: `$this->jsonError(500, 'internal_error', $throwable)`
 
 ---
 
