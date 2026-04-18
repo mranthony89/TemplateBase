@@ -30,3 +30,22 @@ define('CSRF_EXPIRY', 3600);
 
 // Proxy
 define('TRUSTED_PROXIES', []);
+
+// --- Modulo Autenticazione Avanzata ---
+// JWT
+define('JWT_ALGO', 'HS256');
+define('JWT_ACCESS_EXPIRY', 900);       // 15 minuti
+define('JWT_REFRESH_EXPIRY', 604800);   // 7 giorni
+define('JWT_ISSUER', APP_NAME);
+define('JWT_BLACKLIST_DRIVER', 'database'); // 'database' o 'file'
+
+// Magic Link
+define('MAGIC_LINK_ENABLED', true);
+define('MAGIC_LINK_EXPIRY', 600);       // 10 minuti
+
+// 2FA TOTP
+define('TOTP_ENABLED', true);
+define('TOTP_ISSUER', APP_NAME);
+define('TOTP_DIGITS', 6);
+define('TOTP_PERIOD', 30);
+define('TOTP_ALGO', 'sha1');
