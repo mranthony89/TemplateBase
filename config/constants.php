@@ -1,40 +1,32 @@
 <?php
 if (!defined('SECURE_ACCESS')) die;
 
-/**
- * config/constants.php
- * --------------------------------------------------------------------
- * Costanti applicative immutabili, cablate nel codice.
- * Niente valori qui che possano cambiare tra ambienti: quelli vanno
- * in config.php (credenziali) o derivati da APP_ENV.
- * --------------------------------------------------------------------
- */
+// Ambiente
+define('APP_ENV', 'development'); // 'production' per il deploy
+define('APP_NAME', 'TemplateBase');
 
-// Ambiente: 'development' | 'production' | 'staging'
-// In production: display_errors=off, debug log spenti
-define('APP_ENV', 'production');
+// Sicurezza Login
+define('MAX_LOGIN_ATTEMPTS', 5);
+define('LOGIN_TIMEOUT_MINUTES', 15);
+define('SESSION_LIFETIME', 7200);
+define('SESSION_REGENERATE_ID', 1800);
 
-// Nome applicazione (usato nelle pagine di errore, email, log)
-define('APP_NAME', 'Template Base');
+// Hashing
+define('PASSWORD_ALGO', PASSWORD_ARGON2ID); // o PASSWORD_BCRYPT per PHP < 7.3
+define('PASSWORD_COST', 12);
 
-// Sicurezza
-define('MAX_LOGIN_ATTEMPTS', 5);           // Lockout dopo N tentativi falliti
-define('LOCKOUT_DURATION_SECONDS', 900);   // 15 minuti
-define('SESSION_IDLE_TIMEOUT', 1800);      // 30 minuti di inattività
-define('CSRF_TOKEN_LENGTH_BYTES', 32);     // 32 byte = 64 char hex
+// Logging & GDPR
+define('LOG_ROTATION_DAYS', 30);
+define('LOG_IP_MASK', true);       // Maschera ultimo ottetto IPv4
+define('LOG_EMAIL_HASH_ALGO', 'sha256');
 
-// Upload
-define('MAX_UPLOAD_SIZE_BYTES', 10 * 1024 * 1024);   // 10 MB
-define('USER_STORAGE_QUOTA_BYTES', 20 * 1024 * 1024); // 20 MB
-define('ALLOWED_MIME_TYPES', [
-    'image/jpeg', 'image/png', 'image/webp',
-    'application/pdf',
-]);
+// Rate Limiting
+define('RATE_LIMIT_MAX', 60);
+define('RATE_LIMIT_WINDOW', 60);
 
-// Proxy fidati (per X-Forwarded-For). Vuoto = nessun proxy.
-// Esempio: define('TRUSTED_PROXIES', ['10.0.0.1', '10.0.0.2']);
+// CSRF
+define('CSRF_TOKEN_LENGTH', 32);
+define('CSRF_EXPIRY', 3600);
+
+// Proxy
 define('TRUSTED_PROXIES', []);
-
-// Rate limiting (Beyond Minimum rispetto Repo A che ha default=false)
-define('RATE_LIMIT_ENABLED', true);
-define('RATE_LIMIT_REQUESTS', 60);  // richieste/min per IP
