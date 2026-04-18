@@ -1,0 +1,10 @@
+# Blocco accesso HTTP a /logs/ e tutte le sottocartelle
+# I log contengono informazioni sensibili: IP utenti, User-Agent,
+# eventi di sicurezza, query DB. MAI esporre.
+
+Require all denied
+
+<IfModule !mod_authz_core.c>
+    Order deny,allow
+    Deny from all
+</IfModule>
