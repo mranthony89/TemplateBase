@@ -12,6 +12,7 @@ final class TwoFactorController extends BaseController
     public function setup(): void
     {
         if (!TOTP_ENABLED) $this->json(['error' => 'feature_disabled'], 404);
+        $this->requireMethod('POST');
         $payload = $this->requireJwt();
         $userId = (int)$payload['user_id'];
 
@@ -37,6 +38,7 @@ final class TwoFactorController extends BaseController
     public function enable(): void
     {
         if (!TOTP_ENABLED) $this->json(['error' => 'feature_disabled'], 404);
+        $this->requireMethod('POST');
         $payload = $this->requireJwt();
         $userId = (int)$payload['user_id'];
 
@@ -60,6 +62,7 @@ final class TwoFactorController extends BaseController
     public function disable(): void
     {
         if (!TOTP_ENABLED) $this->json(['error' => 'feature_disabled'], 404);
+        $this->requireMethod('POST');
         $payload = $this->requireJwt();
         $userId = (int)$payload['user_id'];
 
@@ -81,6 +84,7 @@ final class TwoFactorController extends BaseController
     public function status(): void
     {
         if (!TOTP_ENABLED) $this->json(['error' => 'feature_disabled'], 404);
+        $this->requireMethod('GET');
         $payload = $this->requireJwt();
         $userId = (int)$payload['user_id'];
         $this->json(['enabled' => UserModel::hasTotp($userId)]);

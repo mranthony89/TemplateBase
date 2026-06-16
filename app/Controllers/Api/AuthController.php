@@ -75,8 +75,6 @@ final class AuthController extends BaseController
 
         $newJti = Jwt::generateJti();
         $newExp = time() + JWT_REFRESH_EXPIRY;
-        // rotate() restituisce false se il vecchio JTI non e' valido (reuse o gia' revocato).
-        // Single source of truth: 1 sola SELECT invece di pre-check + re-check interno.
         if (!RefreshTokenModel::rotate($userId, $oldJti, $newJti, $newExp)) {
             Logger::security('Refresh-token reuse or revoked', ['user_id' => $userId]);
             RefreshTokenModel::revokeAllForUser($userId);
@@ -93,6 +91,7 @@ final class AuthController extends BaseController
 
     public function logout(): void
     {
+        $this->requireMethod('POST');
         $payload = $this->requireJwt();
         if (!empty($payload['jti']) && !empty($payload['exp'])) {
             Jwt::blacklist((string)$payload['jti'], (int)$payload['exp']);
@@ -104,6 +103,7 @@ final class AuthController extends BaseController
 
     public function me(): void
     {
+        $this->requireMethod('GET');
         $payload = $this->requireJwt();
         $user = UserModel::findByIdInternal((int)$payload['user_id']);
         if (!$user) $this->json(['error' => 'user_not_found'], 404);
