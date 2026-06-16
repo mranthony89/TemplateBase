@@ -2,8 +2,18 @@
 if (!defined('SECURE_ACCESS')) die;
 
 /**
- * Refresh tokens persistence with rotation support.
- * Schema: see database/auth_module.sql
+ * RefreshTokenModel
+ * --------------------------------------------------------------------
+ * Persistenza dei refresh token con rotation atomica e reuse-detection.
+ * Schema: database/auth_module.sql
+ *
+ * Rotation atomica: l'unico modo di marcare un refresh-token come
+ * revocato e' un singolo UPDATE con WHERE "AND revoked_at IS NULL AND
+ * expires_at > NOW()". Solo una request concorrente puo' avere
+ * affected_rows == 1: le altre ricevono 0 e rotate() ritorna false,
+ * permettendo al chiamante di trattare il caso come reuse e bumpare
+ * token_version. Niente TOCTOU.
+ * --------------------------------------------------------------------
  */
 final class RefreshTokenModel
 {
@@ -40,10 +50,21 @@ final class RefreshTokenModel
         );
     }
 
+    /**
+     * Rotation atomica. Ritorna true se ha rivocato esattamente UNA riga
+     * e ha emesso il nuovo token; false in tutti gli altri casi (reuse,
+     * gia' revocato, scaduto, race-loss).
+     */
     public static function rotate(int $userId, string $oldJti, string $newJti, int $newExpiresAt): bool
     {
-        if (!self::isValid($userId, $oldJti)) return false;
-        self::revoke($userId, $oldJti);
+        $affected = Database::execute(
+            'UPDATE refresh_tokens SET revoked_at = NOW()
+             WHERE user_id = ? AND jti = ? AND revoked_at IS NULL AND expires_at > NOW()',
+            [$userId, $oldJti]
+        );
+        if ($affected !== 1) {
+            return false;
+        }
         self::issue($userId, $newJti, $newExpiresAt);
         return true;
     }

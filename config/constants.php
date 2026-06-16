@@ -1,8 +1,11 @@
 <?php
 if (!defined('SECURE_ACCESS')) die;
 
-// Ambiente
-define('APP_ENV', 'development'); // 'production' per il deploy
+// Ambiente - default sicuro: production. Cambialo a 'development' SOLO
+// in locale o su domini dev/staging. In production il body delle risposte
+// 5xx NON include exception/file/line/trace; in development li include
+// tutti (loud-debug).
+define('APP_ENV', 'production');
 define('APP_NAME', 'TemplateBase');
 
 // Sicurezza Login
@@ -24,9 +27,12 @@ define('LOG_EMAIL_HASH_ALGO', 'sha256');
 define('RATE_LIMIT_MAX', 60);
 define('RATE_LIMIT_WINDOW', 60);
 // Eta' massima dei file in logs/ratelimit/ prima della cancellazione da
-// parte di system/cron/auth_purge.php. Indipendente dalla finestra di
-// throttling: serve solo a non lasciare crescere la cartella.
+// parte di system/cron/auth_purge.php.
 define('RATE_LIMIT_MAX_AGE_DAYS', 7);
+
+// Hard cap del body JSON in ingresso (POST /api/*). Body piu' grandi
+// vengono rifiutati con 413 prima del json_decode.
+define('API_INPUT_MAX_BYTES', 65536); // 64KB
 
 // CSRF
 define('CSRF_TOKEN_LENGTH', 32);

@@ -10,14 +10,37 @@ if (!defined('SECURE_ACCESS')) die;
  * pensate solo per flussi di autenticazione (login, magic-link, JWT).
  *
  * Loud-debug: ogni catch logga via Logger::error e in dev ri-lancia.
+ *
+ * Token-version: ogni utente ha un contatore monotono `token_version`
+ * embedded nel claim 'tv' degli access token. Bump = revoca istantanea
+ * di tutti gli access token vivi (multi-device).
  * --------------------------------------------------------------------
  */
 final class UserModel
 {
+    /**
+     * Dummy hash per timing-equalization in verifyCredentials.
+     * - Calcolato lazy alla prima miss (utente inesistente).
+     * - Stesso algoritmo/cost dei real users (Argon2id @ PASSWORD_COST).
+     * - Cache statica: dopo la prima miss del worker PHP-FPM, le miss
+     *   successive riutilizzano l'hash gia' calcolato.
+     */
+    private static ?string $dummyHash = null;
+
     private static function dbCatch(\Throwable $e, string $op): void
     {
         Logger::error("UserModel::$op DB error: " . $e->getMessage(), Logger::throwableContext($e));
         if (Env::isDev()) throw $e;
+    }
+
+    private static function dummyHash(): string
+    {
+        if (self::$dummyHash !== null) return self::$dummyHash;
+        $opts = [];
+        if (defined('PASSWORD_COST')) $opts['cost'] = (int)PASSWORD_COST;
+        $algo = defined('PASSWORD_ALGO') ? PASSWORD_ALGO : PASSWORD_DEFAULT;
+        self::$dummyHash = password_hash(bin2hex(random_bytes(16)), $algo, $opts);
+        return self::$dummyHash;
     }
 
     public static function findByIdForUser(int $targetId, int $currentUserId): ?array
@@ -94,8 +117,10 @@ final class UserModel
         } catch (\Throwable $e) { self::dbCatch($e, 'verifyCredentials'); return null; }
 
         if (!$user) {
-            // costante temporale: anti user-enumeration via timing
-            password_verify($plainPassword, '$2y$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidiu');
+            // Timing-equalize con lo STESSO algoritmo dei real users (Argon2id).
+            // Senza questo, l'attaccante distingue "utente esiste" (~100ms
+            // Argon2id) da "utente non esiste" (rispsta immediata).
+            password_verify($plainPassword, self::dummyHash());
             return null;
         }
         if (!password_verify($plainPassword, $user['password_hash'])) {
@@ -126,6 +151,10 @@ final class UserModel
                 'UPDATE users SET password_hash = ? WHERE id = ?',
                 [$hash, $userId]
             );
+            if ($affected > 0) {
+                // Cambio password: invalida tutti gli access token vivi.
+                self::bumpTokenVersion($userId);
+            }
             return $affected > 0;
         } catch (\Throwable $e) { self::dbCatch($e, 'updatePassword'); return false; }
     }
@@ -154,6 +183,37 @@ final class UserModel
                 [$id]
             );
         } catch (\Throwable $e) { self::dbCatch($e, 'findByIdInternal'); return null; }
+    }
+
+    /** Letto da BaseController::issueTokenPair e BaseController::requireJwt. */
+    public static function getTokenVersion(int $userId): int
+    {
+        if ($userId <= 0) return 0;
+        try {
+            $row = Database::fetchOne(
+                'SELECT token_version FROM users WHERE id = ? LIMIT 1',
+                [$userId]
+            );
+            return $row ? (int)$row['token_version'] : 0;
+        } catch (\Throwable $e) { self::dbCatch($e, 'getTokenVersion'); return 0; }
+    }
+
+    /**
+     * Bump del contatore -> revoca istantanea di tutti gli access token vivi.
+     * Chiamato automaticamente da:
+     *   - logout (AuthController::logout)
+     *   - refresh-token reuse detection (AuthController::refresh)
+     *   - cambio password (UserModel::updatePassword)
+     */
+    public static function bumpTokenVersion(int $userId): void
+    {
+        if ($userId <= 0) return;
+        try {
+            Database::execute(
+                'UPDATE users SET token_version = token_version + 1 WHERE id = ?',
+                [$userId]
+            );
+        } catch (\Throwable $e) { self::dbCatch($e, 'bumpTokenVersion'); }
     }
 
     public static function setTotpSecret(int $userId, string $secret): void

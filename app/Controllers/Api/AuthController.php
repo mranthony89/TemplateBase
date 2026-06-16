@@ -7,8 +7,12 @@ if (!defined('SECURE_ACCESS')) die;
  * /api/auth/logout   POST  (Bearer)
  * /api/auth/me       GET   (Bearer)
  *
- * Rate-limit policy:
- *   login : 10 req / 5 min / IP   (bucket 'api_login')
+ * Rate-limit: login = 10 req / 5 min / IP (bucket 'api_login').
+ *
+ * Multi-device revocation:
+ *   - logout                  -> blacklist current jti + bump token_version
+ *                                + revokeAllForUser
+ *   - refresh reuse detection -> bump token_version + revokeAllForUser
  */
 final class AuthController extends BaseController
 {
@@ -49,9 +53,7 @@ final class AuthController extends BaseController
             }
         }
 
-        // login OK -> azzera il counter di brute-force per questo IP
         RateLimiter::reset($key);
-
         $this->json($this->issueTokenPair((int)$user['id'], $user['email']));
     }
 
@@ -75,15 +77,26 @@ final class AuthController extends BaseController
 
         $newJti = Jwt::generateJti();
         $newExp = time() + JWT_REFRESH_EXPIRY;
+        // Atomic rotate: l'UPDATE conditional dentro rotate() impedisce TOCTOU.
+        // affected_rows != 1 -> token gia' revocato o race-lost -> trattalo come
+        // reuse: bump token_version (invalida access vivi) + revoca tutti i refresh.
         if (!RefreshTokenModel::rotate($userId, $oldJti, $newJti, $newExp)) {
             Logger::security('Refresh-token reuse or revoked', ['user_id' => $userId]);
+            UserModel::bumpTokenVersion($userId);
             RefreshTokenModel::revokeAllForUser($userId);
             $this->json(['error' => 'token_revoked'], 401);
         }
 
+        $tv = UserModel::getTokenVersion($userId);
         $this->json([
-            'access_token'  => Jwt::encode(['user_id' => $userId, 'email' => $user['email'], 'typ' => 'access'], JWT_ACCESS_EXPIRY),
-            'refresh_token' => Jwt::encode(['user_id' => $userId, 'typ' => 'refresh', 'jti' => $newJti], JWT_REFRESH_EXPIRY),
+            'access_token'  => Jwt::encode(
+                ['user_id' => $userId, 'email' => $user['email'], 'typ' => 'access', 'tv' => $tv],
+                JWT_ACCESS_EXPIRY
+            ),
+            'refresh_token' => Jwt::encode(
+                ['user_id' => $userId, 'typ' => 'refresh', 'jti' => $newJti],
+                JWT_REFRESH_EXPIRY
+            ),
             'token_type'    => 'Bearer',
             'expires_in'    => JWT_ACCESS_EXPIRY,
         ]);
@@ -93,11 +106,14 @@ final class AuthController extends BaseController
     {
         $this->requireMethod('POST');
         $payload = $this->requireJwt();
+        $userId  = (int)$payload['user_id'];
         if (!empty($payload['jti']) && !empty($payload['exp'])) {
             Jwt::blacklist((string)$payload['jti'], (int)$payload['exp']);
         }
-        RefreshTokenModel::revokeAllForUser((int)$payload['user_id']);
-        Logger::security('API logout', ['user_id' => (int)$payload['user_id']]);
+        // Revoca multi-device: bump tv invalida TUTTI gli access token vivi.
+        UserModel::bumpTokenVersion($userId);
+        RefreshTokenModel::revokeAllForUser($userId);
+        Logger::security('API logout', ['user_id' => $userId]);
         $this->json(['ok' => true]);
     }
 

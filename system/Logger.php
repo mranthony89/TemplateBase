@@ -29,11 +29,6 @@ final class Logger
         self::write(self::ERRORS, 'ERROR', $message, $context);
     }
 
-    /**
-     * Context array compatto per Logger::error/security/debug.
-     * Usare ovunque si voglia loggare una Throwable senza ripetere
-     * ['file'=>$e->getFile(), 'line'=>$e->getLine(), ...].
-     */
     public static function throwableContext(\Throwable $e, bool $withTrace = false): array
     {
         $ctx = [
@@ -47,11 +42,6 @@ final class Logger
         return $ctx;
     }
 
-    /**
-     * Body JSON pronto per le risposte API in development (loud-debug).
-     * Trace come array di righe per leggibilita' dei tool client.
-     * NON usare in production: chiama solo dietro Env::isDev().
-     */
     public static function throwableDevBody(\Throwable $e): array
     {
         return [
@@ -61,6 +51,12 @@ final class Logger
             'line'      => $e->getLine(),
             'trace'     => explode("\n", $e->getTraceAsString()),
         ];
+    }
+
+    private static function pepper(): string
+    {
+        if (!class_exists('Config', false)) return '';
+        return (string)Config::get('auth.pepper', '');
     }
 
     private static function maskIp(string $ip): string
@@ -79,10 +75,19 @@ final class Logger
         return 'xxx';
     }
 
+    /**
+     * Hash email con HMAC-SHA256 se pepper presente, altrimenti SHA256.
+     * Con pepper:    rainbow-table inutilizzabile (richiede leak del pepper).
+     * Senza pepper:  pseudonymization debole ma backward-compatible.
+     */
     private static function hashEmail(string $email): string
     {
-        $algo = defined('LOG_EMAIL_HASH_ALGO') ? LOG_EMAIL_HASH_ALGO : 'sha256';
-        return hash($algo, strtolower(trim($email)));
+        $algo   = defined('LOG_EMAIL_HASH_ALGO') ? LOG_EMAIL_HASH_ALGO : 'sha256';
+        $norm   = strtolower(trim($email));
+        $pepper = self::pepper();
+        return $pepper !== ''
+            ? hash_hmac($algo, $norm, $pepper)
+            : hash($algo, $norm);
     }
 
     private static function sanitizeContext(array $context, string $category): array
@@ -93,7 +98,7 @@ final class Logger
             if (!is_string($v)) continue;
             $lk = strtolower((string)$k);
             if (in_array($lk, ['email', 'user_email', 'mail'], true)) {
-                $context[$k] = 'sha256:' . self::hashEmail($v);
+                $context[$k] = 'h:' . self::hashEmail($v);
             } elseif (in_array($lk, ['ip', 'user_ip', 'client_ip', 'remote_addr'], true)) {
                 $context[$k] = $keepFullIp ? ($v . ' (gdpr_sensitive=1)') : self::maskIp($v);
             }

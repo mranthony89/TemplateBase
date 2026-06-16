@@ -4,14 +4,18 @@ if (!defined('SECURE_ACCESS')) die;
 /**
  * JWT HS256 encoder/decoder con supporto JTI-blacklist.
  * Implementazione manuale RFC 7519 (zero deps).
- * Vedi docs/AUTH_MODULE.md per la descrizione completa.
+ *
+ * Decoding strict: tutti i claim obbligatori (exp, iat, iss, jti) DEVONO
+ * essere presenti, altrimenti il token e' rifiutato. Questo previene il
+ * bypass via 'token forgiato senza exp' in caso di leak della secret key:
+ * il blacklist viene comunque controllato perche' jti e' richiesto.
+ *
+ * Il claim 'tv' (token_version) e 'typ' NON sono validati qui: sono
+ * specifici dei flussi access-vs-refresh, e BaseController::requireJwt li
+ * controlla per gli access token (multi-device revocation).
  */
 final class Jwt
 {
-    /**
-     * Algo enforcement: oggi supportiamo solo HS256 (HMAC-SHA256).
-     * Se JWT_ALGO viene impostato a un valore diverso, fail-fast.
-     */
     private static function expectedAlg(): string
     {
         $alg = defined('JWT_ALGO') ? (string)JWT_ALGO : 'HS256';
@@ -54,21 +58,27 @@ final class Jwt
         if (count($parts) !== 3) return null;
         [$h64, $p64, $s64] = $parts;
 
-        $header = json_decode(self::base64UrlDecode($h64), true);
+        $header  = json_decode(self::base64UrlDecode($h64), true);
         $payload = json_decode(self::base64UrlDecode($p64), true);
-        $sig = self::base64UrlDecode($s64);
+        $sig     = self::base64UrlDecode($s64);
 
         if (!is_array($header) || !is_array($payload) || $sig === false) return null;
         if (($header['alg'] ?? '') !== $alg) return null;
+        if (($header['typ'] ?? '') !== 'JWT') return null;
 
         $expected = hash_hmac('sha256', $h64 . '.' . $p64, self::secret(), true);
         if (!hash_equals($expected, $sig)) return null;
 
+        // Claim obbligatori (defense-in-depth contro forgery con claim mancanti).
+        foreach (['exp', 'iat', 'iss', 'jti'] as $req) {
+            if (!isset($payload[$req])) return null;
+        }
+
         $now = time();
         if (isset($payload['nbf']) && $now < (int)$payload['nbf']) return null;
-        if (isset($payload['exp']) && $now >= (int)$payload['exp']) return null;
-        if (isset($payload['iss']) && $payload['iss'] !== JWT_ISSUER) return null;
-        if (!empty($payload['jti']) && self::isBlacklisted($payload['jti'])) return null;
+        if ($now >= (int)$payload['exp']) return null;
+        if ($payload['iss'] !== JWT_ISSUER) return null;
+        if (self::isBlacklisted((string)$payload['jti'])) return null;
 
         return $payload;
     }

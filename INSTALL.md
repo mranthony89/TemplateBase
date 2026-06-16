@@ -37,9 +37,10 @@ Struttura attesa sul server:
       ```
       php -r "echo bin2hex(random_bytes(32));"
       ```
-  - `jwt.secret_key` — stesso comando, **almeno 32 char** (`Config::require('jwt.secret_key')` lancia eccezione se manca o è troppo corto, anche in production)
-  - `magic_link.secret_key` — stesso comando
-  - `app.base_url` — URL pubblico (es. `https://example.com`) usato per i link delle email
+  - `app.base_url` — URL pubblico (es. `https://example.com`) usato per i link nelle email
+  - `auth.pepper` — **OBBLIGATORIO in production**, server-pepper per HMAC di IP/email nei log e nei bucket del RateLimiter. Generalo con lo stesso comando di `app_secret`. Non ruotarlo: la rotazione invalida gli hash storati.
+  - `jwt.secret_key` — 32+ char (`Config::require('jwt.secret_key')` lancia eccezione se manca o è troppo corto, anche in production)
+  - `magic_link.secret_key`
   - `mail.from.address` / `mail.from.name`
   - `mail.smtp.{host,port,username,password,encryption}` (per magic-link/recovery)
 - [ ] Permessi restrittivi:
@@ -97,13 +98,11 @@ Il percorso atteso è **`system/lib/PHPMailer/src/`** (struttura upstream origin
       Se non hai bisogno delle email, imposta `MAGIC_LINK_ENABLED = false`
       in `config/constants.php`.
 
-Vedi anche `system/lib/PHPMailer/README.md`.
-
 ### Test invio SMTP (facoltativo)
 
 In `APP_ENV='development'` `Mailer` abilita `SMTPDebug=2` e il transcript SMTP
 viene scritto in `logs/debug/debug-YYYY-MM-DD.log`. Utile per verificare
-credenziali/STARTTLS/SSL della prima volta.
+credenziali/STARTTLS/SSL la prima volta.
 
 ---
 
@@ -119,12 +118,21 @@ credenziali/STARTTLS/SSL della prima volta.
         created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
       ```
-- [ ] **Auth module** — applica la migration:
+- [ ] **Auth module v1** — applica la migration base:
       ```
       mysql -u utente_user -p utente_tbase < database/auth_module.sql
       ```
       Aggiunge colonne `totp_secret`, `totp_enabled` a `users` e crea le tabelle
-      `refresh_tokens`, `jwt_blacklist`, `magic_links`. Vedi `docs/AUTH_MODULE.md`.
+      `refresh_tokens`, `jwt_blacklist`, `magic_links`.
+- [ ] **Auth module v2** — applica l'hardening (multi-device revocation):
+      ```
+      mysql -u utente_user -p utente_tbase < database/auth_module_v2.sql
+      ```
+      Aggiunge `users.token_version`. **Senza questa migration,
+      `BaseController::requireJwt` rigetta tutte le richieste con Bearer**
+      (il claim 'tv' non puo' essere validato).
+
+Vedi `docs/AUTH_MODULE.md` per la descrizione dei flussi.
 
 ---
 
@@ -145,7 +153,8 @@ credenziali/STARTTLS/SSL della prima volta.
 ## 8. Development vs Production
 
 Il template distingue i due ambienti tramite la costante `APP_ENV` in
-`config/constants.php`.
+`config/constants.php`. Il **default e' `'production'`** (loud-debug spento).
+Passa esplicitamente a `'development'` solo in locale o su domini dev/staging.
 
 ### Development (`'development'`)
 - `error_reporting(E_ALL)`, `display_errors=1`, `display_startup_errors=1`.
@@ -154,16 +163,18 @@ Il template distingue i due ambienti tramite la costante `APP_ENV` in
 - `Mailer` abilita `SMTPDebug=2` con output via `Logger::debug`.
 - Tutti i `catch` nei modelli/controller ri-lanciano dopo aver loggato.
 
-### Production (`'production'`)
+### Production (`'production'`) — DEFAULT
 - `display_errors=0`; error log sempre attivo (`log_errors=1`).
 - Le API rispondono con `{"error":"internal_error"}` generico.
 - `JwtBlacklistModel::isBlacklisted` è fail-closed: se il DB fallisce tratta il
   token come revocato.
 - `Mailer::send` ritorna `false` e logga, senza propagare.
+- `auth.pepper` deve essere settato in `config/config.php` per HMAC pseudonymization
+  di IP/email nei log (senza pepper si fallback a sha256 nudo: weaker GDPR).
 
-Per passare in production:
-- [ ] `define('APP_ENV', 'production');`
-- [ ] Testa: `curl https://tuodominio.it/api/auth/login` NON deve contenere stacktrace.
+Verifica:
+- [ ] `curl https://tuodominio.it/api/auth/login` NON deve contenere stacktrace.
+- [ ] `Config::get('auth.pepper')` non vuoto.
 
 ---
 
@@ -184,22 +195,22 @@ Per passare in production:
 
 ## 11. Cron — pulizia automatica
 
-La pulizia log gira con probabilità 1% per richiesta. Per garantire purging
-costante (log + token scaduti):
+La pulizia log gira con probabilita' 1% per richiesta. Per garantire purging
+costante (log + token scaduti) e' presente lo script:
 
-- [ ] Crea `system/cron/auth_purge.php`:
-      ```php
-      <?php
-      require __DIR__ . '/../bootstrap.php';
-      cleanup_old_logs();
-      RefreshTokenModel::purgeExpired();
-      JwtBlacklistModel::purgeExpired();
-      MagicLinkModel::purgeExpired();
+```
+system/cron/auth_purge.php
+```
+
+Purga: `jwt_blacklist` scaduti, `magic_links` scaduti/usati, `refresh_tokens`
+scaduti, file `.json` stale in `logs/ratelimit/`.
+
+- [ ] Schedula in cron (cPanel → Cron Jobs):
       ```
-- [ ] Cron giornaliero:
+      */15 * * * * /usr/bin/php /home/utente/system/cron/auth_purge.php >/dev/null 2>&1
       ```
-      0 3 * * * /usr/bin/php /home/utente/system/cron/auth_purge.php >/dev/null 2>&1
-      ```
+- [ ] Lo script e' CLI-only: una richiesta HTTP risponde 403 (e `/system/` e'
+      gia' bloccato via .htaccess).
 
 ---
 
@@ -218,3 +229,4 @@ costante (log + token scaduti):
         -d '{"email":"u@e.it","password":"x"}'
       ```
 - [ ] In production la risposta non deve contenere `file`, `line` o `trace`.
+- [ ] Body API > 64KB (`API_INPUT_MAX_BYTES`) deve rispondere 413.
