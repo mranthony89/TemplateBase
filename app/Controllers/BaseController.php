@@ -6,16 +6,20 @@ if (!defined('SECURE_ACCESS')) die;
  * --------------------------------------------------------------------
  * Classe astratta per tutti i controller (HTML e API).
  *
- *   view()         -> render view PHP da /app/Views/
- *   redirect()     -> redirect sicuro (solo path relativi)
- *   json()         -> output JSON + exit
- *   jsonError()    -> output JSON di errore (in dev include file/line/trace)
- *   requireAuth()  -> guard sessione web
- *   requireCsrf()  -> guard CSRF su POST/PUT/DELETE
- *   getJsonInput() -> decode body JSON delle API
- *   requireJwt()   -> guard Bearer JWT (API)
+ * Helper di routing/risposta:
+ *   view()          -> render view PHP da /app/Views/
+ *   redirect()      -> redirect sicuro (solo path relativi)
+ *   json()          -> output JSON + exit
+ *   jsonError()     -> output JSON di errore (in dev include trace)
+ *   requireAuth()   -> guard sessione web
+ *   requireCsrf()   -> guard CSRF su POST/PUT/DELETE
+ *   requireMethod() -> guard HTTP method (JSON 405 se non match)
+ *   getJsonInput()  -> decode body JSON delle API
+ *   requireJwt()    -> guard Bearer JWT (API)
+ *   throttleByIp()  -> rate-limit per IP con log security uniforme
+ *   issueTokenPair()-> emette coppia access+refresh (login & magic-link)
  *
- * Nessuno dei metodi qui è routabile: Router li esclude via Reflection.
+ * Router esclude TUTTI i metodi di questa classe via Reflection.
  * --------------------------------------------------------------------
  */
 abstract class BaseController
@@ -55,9 +59,9 @@ abstract class BaseController
     }
 
     /**
-     * Risposta di errore JSON. Usare al posto di json(['error'=>...], code)
-     * quando l'errore nasce da un'eccezione: in development il body include
-     * exception/message/file/line/trace per il debug immediato.
+     * Risposta di errore JSON. Da usare al posto di json(['error'=>...], code)
+     * quando l'errore nasce da un'eccezione: in dev il body include
+     * exception/message/file/line/trace (loud-debug).
      */
     protected function jsonError(int $status, string $errorKey, ?\Throwable $e = null, array $extra = []): void
     {
@@ -67,18 +71,12 @@ abstract class BaseController
         }
 
         if ($e !== null) {
-            Logger::error("API error [$errorKey]: " . $e->getMessage(), [
-                'exception' => get_class($e),
-                'file'      => $e->getFile(),
-                'line'      => $e->getLine(),
-                'status'    => $status,
-            ]);
-            if (defined('APP_ENV') && APP_ENV === 'development') {
-                $body['exception'] = get_class($e);
-                $body['message']   = $e->getMessage();
-                $body['file']      = $e->getFile();
-                $body['line']      = $e->getLine();
-                $body['trace']     = explode("\n", $e->getTraceAsString());
+            Logger::error(
+                "API error [$errorKey]: " . $e->getMessage(),
+                Logger::throwableContext($e) + ['status' => $status]
+            );
+            if (Env::isDev()) {
+                $body += Logger::throwableDevBody($e);
             }
         }
 
@@ -103,6 +101,18 @@ abstract class BaseController
         }
     }
 
+    /**
+     * Whitelist HTTP method per endpoint API. Risponde 405 JSON se non match.
+     * Es: $this->requireMethod('POST') o $this->requireMethod('POST','GET').
+     */
+    protected function requireMethod(string ...$methods): void
+    {
+        $m = $_SERVER['REQUEST_METHOD'] ?? '';
+        if (!in_array($m, $methods, true)) {
+            $this->json(['error' => 'method_not_allowed'], 405);
+        }
+    }
+
     /** Decode del body JSON (POST /api/*). Array vuoto se parse fallisce. */
     protected function getJsonInput(): array
     {
@@ -117,8 +127,7 @@ abstract class BaseController
     }
 
     /**
-     * Verifica il Bearer JWT in Authorization header.
-     * In caso di successo ritorna il payload decodificato.
+     * Bearer JWT guard. In caso di successo ritorna il payload decodificato.
      * In caso di fallimento invia 401 JSON e termina.
      */
     protected function requireJwt(): array
@@ -141,5 +150,40 @@ abstract class BaseController
             $this->json(['error' => 'invalid_token'], 401);
         }
         return $payload;
+    }
+
+    /**
+     * Rate-limit IP-based con log security uniforme.
+     * Ritorna la chiave usata (utile per RateLimiter::reset() dopo successo).
+     * In caso di throttle invia 429 JSON e termina.
+     */
+    protected function throttleByIp(string $bucket, int $max, int $window, string $logMessage): string
+    {
+        $ip  = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        $key = $bucket . '_' . hash('sha256', $ip);
+        if (!RateLimiter::throttle($key, $max, $window)) {
+            Logger::security($logMessage, ['gdpr_sensitive' => 1, 'ip' => $ip]);
+            $this->json(['error' => 'rate_limited'], 429);
+        }
+        return $key;
+    }
+
+    /**
+     * Emette una coppia access+refresh per $userId.
+     * Side-effect: salva il refresh JTI in refresh_tokens.
+     * Ritorna l'array da serializzare come risposta JSON.
+     */
+    protected function issueTokenPair(int $userId, string $email): array
+    {
+        $refreshJti = Jwt::generateJti();
+        $refreshExp = time() + JWT_REFRESH_EXPIRY;
+        RefreshTokenModel::issue($userId, $refreshJti, $refreshExp);
+
+        return [
+            'access_token'  => Jwt::encode(['user_id' => $userId, 'email' => $email, 'typ' => 'access'], JWT_ACCESS_EXPIRY),
+            'refresh_token' => Jwt::encode(['user_id' => $userId, 'typ' => 'refresh', 'jti' => $refreshJti], JWT_REFRESH_EXPIRY),
+            'token_type'    => 'Bearer',
+            'expires_in'    => JWT_ACCESS_EXPIRY,
+        ];
     }
 }

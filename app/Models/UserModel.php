@@ -9,24 +9,15 @@ if (!defined('SECURE_ACCESS')) die;
  * (Row-Level Security esplicita). Le helper marcate "Internal" sono
  * pensate solo per flussi di autenticazione (login, magic-link, JWT).
  *
- * Loud-debug: ogni catch logga via Logger::error e in development
- * ri-lancia l'eccezione cos\u00ec il front-controller pu\u00f2 mostrarla.
+ * Loud-debug: ogni catch logga via Logger::error e in dev ri-lancia.
  * --------------------------------------------------------------------
  */
 final class UserModel
 {
-    private static function isDev(): bool
-    {
-        return defined('APP_ENV') && APP_ENV === 'development';
-    }
-
     private static function dbCatch(\Throwable $e, string $op): void
     {
-        Logger::error("UserModel::$op DB error: " . $e->getMessage(), [
-            'file' => $e->getFile(),
-            'line' => $e->getLine(),
-        ]);
-        if (self::isDev()) throw $e;
+        Logger::error("UserModel::$op DB error: " . $e->getMessage(), Logger::throwableContext($e));
+        if (Env::isDev()) throw $e;
     }
 
     public static function findByIdForUser(int $targetId, int $currentUserId): ?array
@@ -151,18 +142,9 @@ final class UserModel
     }
 
     /* ============================================================
-     * Auth-module helpers
-     * Pensati solo per flussi di autenticazione lato server.
-     * Non chiamare da controller che servono dati utente al client.
+     * Auth-module helpers (uso server-side per flussi auth)
      * ============================================================ */
 
-    /**
-     * Lookup interno senza RLS. Usato da:
-     *  - JWT validation     (Bearer -> chi sono?)
-     *  - Magic-link verify  (consumo token)
-     *  - Refresh-token flow
-     * Non espone mai password_hash / totp_secret.
-     */
     public static function findByIdInternal(int $id): ?array
     {
         if ($id <= 0) return null;
@@ -174,16 +156,12 @@ final class UserModel
         } catch (\Throwable $e) { self::dbCatch($e, 'findByIdInternal'); return null; }
     }
 
-    /**
-     * Salva il secret base32 e azzera totp_enabled (richiede conferma con
-     * codice valido via enableTotp()).
-     */
     public static function setTotpSecret(int $userId, string $secret): void
     {
         if ($userId <= 0 || $secret === '') {
             $msg = 'UserModel::setTotpSecret args invalidi';
             Logger::error($msg, ['user_id' => $userId]);
-            if (self::isDev()) throw new InvalidArgumentException($msg);
+            if (Env::isDev()) throw new InvalidArgumentException($msg);
             return;
         }
         try {
@@ -198,10 +176,7 @@ final class UserModel
     {
         if ($userId <= 0) return;
         try {
-            Database::execute(
-                'UPDATE users SET totp_enabled = 1 WHERE id = ?',
-                [$userId]
-            );
+            Database::execute('UPDATE users SET totp_enabled = 1 WHERE id = ?', [$userId]);
         } catch (\Throwable $e) { self::dbCatch($e, 'enableTotp'); }
     }
 
@@ -209,10 +184,7 @@ final class UserModel
     {
         if ($userId <= 0) return;
         try {
-            Database::execute(
-                'UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?',
-                [$userId]
-            );
+            Database::execute('UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE id = ?', [$userId]);
         } catch (\Throwable $e) { self::dbCatch($e, 'disableTotp'); }
     }
 
@@ -220,10 +192,7 @@ final class UserModel
     {
         if ($userId <= 0) return false;
         try {
-            $row = Database::fetchOne(
-                'SELECT totp_enabled FROM users WHERE id = ? LIMIT 1',
-                [$userId]
-            );
+            $row = Database::fetchOne('SELECT totp_enabled FROM users WHERE id = ? LIMIT 1', [$userId]);
             return !empty($row) && (int)$row['totp_enabled'] === 1;
         } catch (\Throwable $e) { self::dbCatch($e, 'hasTotp'); return false; }
     }
@@ -232,10 +201,7 @@ final class UserModel
     {
         if ($userId <= 0) return null;
         try {
-            $row = Database::fetchOne(
-                'SELECT totp_secret FROM users WHERE id = ? LIMIT 1',
-                [$userId]
-            );
+            $row = Database::fetchOne('SELECT totp_secret FROM users WHERE id = ? LIMIT 1', [$userId]);
             return $row['totp_secret'] ?? null;
         } catch (\Throwable $e) { self::dbCatch($e, 'getTotpSecret'); return null; }
     }

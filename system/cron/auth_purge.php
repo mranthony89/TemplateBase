@@ -6,28 +6,18 @@
  *
  * Cosa purga
  *   1. jwt_blacklist  : righe con expires_at < NOW()
- *   2. magic_links    : righe scadute o gia' consumate (used_at IS NOT NULL)
+ *   2. magic_links    : righe scadute o gia' consumate
  *   3. refresh_tokens : righe con expires_at < NOW()
  *   4. logs/ratelimit : file .json piu' vecchi di RATE_LIMIT_MAX_AGE_DAYS
  *                      (fallback 7 giorni)
  *
  * Esecuzione: SOLO CLI.
- *   La cartella /system/ e' bloccata via .htaccess (Require all denied),
- *   quindi un eventuale accesso HTTP e' gia' rifiutato dal webserver.
- *   Lo script verifica comunque PHP_SAPI e rifiuta ogni SAPI non-CLI
- *   come difesa in profondita'.
- *
  *   Crontab tipico:
  *     */15 * * * * /usr/bin/php /path/to/app/system/cron/auth_purge.php
  *
- * Policy errori (loud-debug / fail-open per manutenzione)
- *   Ogni fase e' isolata in try/catch: il fallimento di una non blocca
- *   le successive. In development la prima eccezione viene rilanciata
- *   al termine per visibilita' immediata; in produzione viene solo
- *   loggata e lo script esce con status 1.
- *
- * Output
- *   Righe testuali su stdout + exit code (0 = ok, 1 = almeno un errore).
+ * Policy errori (loud-debug + fail-open per manutenzione)
+ *   Ogni fase isolata in try/catch: una fase rotta non blocca le altre.
+ *   In dev la prima eccezione viene rilanciata a fine script.
  * --------------------------------------------------------------------
  */
 
@@ -42,7 +32,6 @@ if (PHP_SAPI !== 'cli') {
 
 require_once dirname(__DIR__) . '/bootstrap.php';
 
-$isDev  = defined('APP_ENV') && APP_ENV === 'development';
 $errors = [];
 $report = [
     'started_at'      => date('c'),
@@ -56,11 +45,7 @@ $run = function (string $label, callable $fn) use (&$errors, &$report) {
     try {
         $report[$label] = $fn();
     } catch (\Throwable $e) {
-        Logger::error("auth_purge[$label] failed: " . $e->getMessage(), [
-            'file'  => $e->getFile(),
-            'line'  => $e->getLine(),
-            'trace' => $e->getTraceAsString(),
-        ]);
+        Logger::error("auth_purge[$label] failed: " . $e->getMessage(), Logger::throwableContext($e, true));
         $errors[] = ['phase' => $label, 'message' => $e->getMessage()];
         $report[$label] = 'error';
     }
@@ -84,8 +69,11 @@ $run('ratelimit_files', function () {
         if ($entry === '.' || $entry === '..') continue;
         if (substr($entry, -5) !== '.json') continue;
         $path = $dir . '/' . $entry;
-        if (!is_file($path)) continue;
-        if (@filemtime($path) < $cutoff && @unlink($path)) {
+        // Niente TOCTOU is_file: filemtime() ritorna false se il file e' sparito
+        // o non e' un file regolare. Risparmia un syscall stat() per entry.
+        $mtime = @filemtime($path);
+        if ($mtime === false) continue;
+        if ($mtime < $cutoff && @unlink($path)) {
             $deleted++;
         }
     }
@@ -97,16 +85,14 @@ $report['finished_at'] = date('c');
 $report['errors']      = $errors;
 $ok = empty($errors);
 
-Logger::info('auth_purge completed', $report);
+Logger::debug('auth_purge completed', $report);
 
 foreach ($report as $k => $v) {
     if (is_array($v)) $v = json_encode($v);
     echo str_pad($k, 18) . ' : ' . $v . PHP_EOL;
 }
 
-if ($isDev && !$ok) {
-    // loud-debug: rilancia la prima eccezione dopo aver completato tutte le
-    // fasi, cosi' nessuna fase resta indietro ma l'errore e' visibile.
+if (Env::isDev() && !$ok) {
     throw new RuntimeException('auth_purge: ' . $errors[0]['message']);
 }
 

@@ -2,13 +2,16 @@
 if (!defined('SECURE_ACCESS')) die;
 
 /**
- * Lazy wrapper for vendored PHPMailer.
- * Files expected in:  system/lib/PHPMailer/src/{Exception,PHPMailer,SMTP}.php
- * (download from https://github.com/PHPMailer/PHPMailer/releases — see INSTALL.md §5).
+ * Mailer
+ * --------------------------------------------------------------------
+ * Lazy wrapper su PHPMailer vendored.
+ * Files attesi in:  system/lib/PHPMailer/src/{Exception,PHPMailer,SMTP}.php
+ * (vedi INSTALL.md §5 per il download).
  *
- * Loud-debug policy:
- *   APP_ENV === 'development'  -> SMTPDebug=2, exception re-thrown after logging.
- *   APP_ENV === 'production'   -> error logged, returns false.
+ * Loud-debug:
+ *   - dev   : SMTPDebug=2, transcript via Logger::debug, exception ri-lanciata.
+ *   - prod  : errore loggato, send() ritorna false (callers non vedono dettagli).
+ * --------------------------------------------------------------------
  */
 final class Mailer
 {
@@ -43,16 +46,14 @@ final class Mailer
     {
         self::load();
 
-        $cfg  = $GLOBALS['config']['mail']  ?? [];
-        $smtp = $cfg['smtp']                ?? [];
-        $from = $cfg['from']                ?? [];
-
-        $isDev = defined('APP_ENV') && APP_ENV === 'development';
+        $smtp = (array)Config::get('mail.smtp', []);
+        $from = (array)Config::get('mail.from', []);
+        $isDev = Env::isDev();
 
         $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
 
         if ($isDev) {
-            $mail->SMTPDebug   = 2; // verbose SMTP transcript
+            $mail->SMTPDebug   = 2;
             $mail->Debugoutput = function ($str, $level) {
                 Logger::debug('PHPMailer[' . $level . ']: ' . trim($str));
             };
@@ -77,8 +78,8 @@ final class Mailer
             $mail->CharSet  = 'UTF-8';
             $mail->Encoding = 'base64';
             $mail->setFrom(
-                (string)($from['address'] ?? $cfg['from_address'] ?? 'noreply@localhost'),
-                (string)($from['name']    ?? $cfg['from_name']    ?? (defined('APP_NAME') ? APP_NAME : 'App'))
+                (string)($from['address'] ?? Config::get('mail.from_address', 'noreply@localhost')),
+                (string)($from['name']    ?? Config::get('mail.from_name',    defined('APP_NAME') ? APP_NAME : 'App'))
             );
             $mail->addAddress($to);
             $mail->Subject = $subject;
@@ -99,12 +100,9 @@ final class Mailer
             }
             return $ok;
         } catch (\Throwable $e) {
-            Logger::error('Mail send failed: ' . $e->getMessage(), [
-                'to'    => $to,
-                'file'  => $e->getFile(),
-                'line'  => $e->getLine(),
-            ]);
-            if ($isDev) throw $e; // loud in dev
+            Logger::error('Mail send failed: ' . $e->getMessage(),
+                Logger::throwableContext($e) + ['to' => $to]);
+            if ($isDev) throw $e;
             return false;
         }
     }

@@ -29,6 +29,40 @@ final class Logger
         self::write(self::ERRORS, 'ERROR', $message, $context);
     }
 
+    /**
+     * Context array compatto per Logger::error/security/debug.
+     * Usare ovunque si voglia loggare una Throwable senza ripetere
+     * ['file'=>$e->getFile(), 'line'=>$e->getLine(), ...].
+     */
+    public static function throwableContext(\Throwable $e, bool $withTrace = false): array
+    {
+        $ctx = [
+            'exception' => get_class($e),
+            'file'      => $e->getFile(),
+            'line'      => $e->getLine(),
+        ];
+        if ($withTrace) {
+            $ctx['trace'] = $e->getTraceAsString();
+        }
+        return $ctx;
+    }
+
+    /**
+     * Body JSON pronto per le risposte API in development (loud-debug).
+     * Trace come array di righe per leggibilita' dei tool client.
+     * NON usare in production: chiama solo dietro Env::isDev().
+     */
+    public static function throwableDevBody(\Throwable $e): array
+    {
+        return [
+            'exception' => get_class($e),
+            'message'   => $e->getMessage(),
+            'file'      => $e->getFile(),
+            'line'      => $e->getLine(),
+            'trace'     => explode("\n", $e->getTraceAsString()),
+        ];
+    }
+
     private static function maskIp(string $ip): string
     {
         if (!defined('LOG_IP_MASK') || LOG_IP_MASK !== true) return $ip;

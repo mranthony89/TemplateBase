@@ -7,23 +7,18 @@ if (!defined('SECURE_ACCESS')) die;
  * /api/auth/logout   POST  (Bearer)
  * /api/auth/me       GET   (Bearer)
  *
- * Rate-limit policy (RateLimiter is fully static):
- *   login : 10 req / 5 min / IP   key = 'api_login_' . sha256(ip)
+ * Rate-limit policy:
+ *   login : 10 req / 5 min / IP   (bucket 'api_login')
  */
 final class AuthController extends BaseController
 {
+    private const LOGIN_MAX    = 10;
+    private const LOGIN_WINDOW = 300; // 5 minuti
+
     public function login(): void
     {
-        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-            $this->json(['error' => 'method_not_allowed'], 405);
-        }
-
-        $ip  = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
-        $key = 'api_login_' . hash('sha256', $ip);
-        if (!RateLimiter::throttle($key, 10, 300)) {
-            Logger::security('API login rate-limited', ['gdpr_sensitive' => 1, 'ip' => $ip]);
-            $this->json(['error' => 'rate_limited'], 429);
-        }
+        $this->requireMethod('POST');
+        $key = $this->throttleByIp('api_login', self::LOGIN_MAX, self::LOGIN_WINDOW, 'API login rate-limited');
 
         $in    = $this->getJsonInput();
         $email = trim((string)($in['email'] ?? ''));
@@ -36,7 +31,10 @@ final class AuthController extends BaseController
 
         $user = UserModel::verifyCredentials($email, $pass);
         if (!$user) {
-            Logger::security('API login failed', ['gdpr_sensitive' => 1, 'email' => $email, 'ip' => $ip]);
+            Logger::security('API login failed', [
+                'gdpr_sensitive' => 1, 'email' => $email,
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? '',
+            ]);
             $this->json(['error' => 'invalid_credentials'], 401);
         }
 
@@ -51,17 +49,15 @@ final class AuthController extends BaseController
             }
         }
 
-        // login OK — azzera il counter di brute-force per questo IP
+        // login OK -> azzera il counter di brute-force per questo IP
         RateLimiter::reset($key);
 
-        $this->issueTokens((int)$user['id'], $user['email']);
+        $this->json($this->issueTokenPair((int)$user['id'], $user['email']));
     }
 
     public function refresh(): void
     {
-        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-            $this->json(['error' => 'method_not_allowed'], 405);
-        }
+        $this->requireMethod('POST');
 
         $in    = $this->getJsonInput();
         $token = (string)($in['refresh_token'] ?? '');
@@ -74,26 +70,22 @@ final class AuthController extends BaseController
         $userId = (int)$payload['user_id'];
         $oldJti = (string)$payload['jti'];
 
-        if (!RefreshTokenModel::isValid($userId, $oldJti)) {
-            // possibile token-reuse attack: revoca tutto
+        $user = UserModel::findByIdInternal($userId);
+        if (!$user) $this->json(['error' => 'user_not_found'], 401);
+
+        $newJti = Jwt::generateJti();
+        $newExp = time() + JWT_REFRESH_EXPIRY;
+        // rotate() restituisce false se il vecchio JTI non e' valido (reuse o gia' revocato).
+        // Single source of truth: 1 sola SELECT invece di pre-check + re-check interno.
+        if (!RefreshTokenModel::rotate($userId, $oldJti, $newJti, $newExp)) {
             Logger::security('Refresh-token reuse or revoked', ['user_id' => $userId]);
             RefreshTokenModel::revokeAllForUser($userId);
             $this->json(['error' => 'token_revoked'], 401);
         }
 
-        $user = UserModel::findByIdInternal($userId);
-        if (!$user) $this->json(['error' => 'user_not_found'], 401);
-
-        $newRefreshJti = Jwt::generateJti();
-        $newRefreshExp = time() + JWT_REFRESH_EXPIRY;
-        RefreshTokenModel::rotate($userId, $oldJti, $newRefreshJti, $newRefreshExp);
-
-        $access  = Jwt::encode(['user_id' => $userId, 'email' => $user['email'], 'typ' => 'access'], JWT_ACCESS_EXPIRY);
-        $refresh = Jwt::encode(['user_id' => $userId, 'typ' => 'refresh', 'jti' => $newRefreshJti], JWT_REFRESH_EXPIRY);
-
         $this->json([
-            'access_token'  => $access,
-            'refresh_token' => $refresh,
+            'access_token'  => Jwt::encode(['user_id' => $userId, 'email' => $user['email'], 'typ' => 'access'], JWT_ACCESS_EXPIRY),
+            'refresh_token' => Jwt::encode(['user_id' => $userId, 'typ' => 'refresh', 'jti' => $newJti], JWT_REFRESH_EXPIRY),
             'token_type'    => 'Bearer',
             'expires_in'    => JWT_ACCESS_EXPIRY,
         ]);
@@ -116,22 +108,5 @@ final class AuthController extends BaseController
         $user = UserModel::findByIdInternal((int)$payload['user_id']);
         if (!$user) $this->json(['error' => 'user_not_found'], 404);
         $this->json(['user' => $user]);
-    }
-
-    private function issueTokens(int $userId, string $email): void
-    {
-        $refreshJti = Jwt::generateJti();
-        $refreshExp = time() + JWT_REFRESH_EXPIRY;
-        RefreshTokenModel::issue($userId, $refreshJti, $refreshExp);
-
-        $access  = Jwt::encode(['user_id' => $userId, 'email' => $email, 'typ' => 'access'], JWT_ACCESS_EXPIRY);
-        $refresh = Jwt::encode(['user_id' => $userId, 'typ' => 'refresh', 'jti' => $refreshJti], JWT_REFRESH_EXPIRY);
-
-        $this->json([
-            'access_token'  => $access,
-            'refresh_token' => $refresh,
-            'token_type'    => 'Bearer',
-            'expires_in'    => JWT_ACCESS_EXPIRY,
-        ]);
     }
 }

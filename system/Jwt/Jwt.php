@@ -1,15 +1,31 @@
 <?php
-defined('SECURE_ACCESS') or die('Direct access not allowed');
+if (!defined('SECURE_ACCESS')) die;
 
 /**
- * JWT HS256 encoder/decoder with JTI blacklist support.
- * No external library; manual implementation per RFC 7519.
- * See docs/AUTH_MODULE.md for full description.
+ * JWT HS256 encoder/decoder con supporto JTI-blacklist.
+ * Implementazione manuale RFC 7519 (zero deps).
+ * Vedi docs/AUTH_MODULE.md per la descrizione completa.
  */
 final class Jwt
 {
+    /**
+     * Algo enforcement: oggi supportiamo solo HS256 (HMAC-SHA256).
+     * Se JWT_ALGO viene impostato a un valore diverso, fail-fast.
+     */
+    private static function expectedAlg(): string
+    {
+        $alg = defined('JWT_ALGO') ? (string)JWT_ALGO : 'HS256';
+        if ($alg !== 'HS256') {
+            $msg = "JWT_ALGO='$alg' non supportato (solo HS256).";
+            Logger::error($msg);
+            throw new RuntimeException($msg);
+        }
+        return 'HS256';
+    }
+
     public static function encode(array $payload, int $expiry = JWT_ACCESS_EXPIRY): string
     {
+        $alg = self::expectedAlg();
         $now = time();
         $payload['iss'] = JWT_ISSUER;
         $payload['iat'] = $now;
@@ -19,7 +35,7 @@ final class Jwt
             $payload['jti'] = self::generateJti();
         }
 
-        $header = ['typ' => 'JWT', 'alg' => 'HS256'];
+        $header = ['typ' => 'JWT', 'alg' => $alg];
         $segments = [
             self::base64UrlEncode(json_encode($header, JSON_UNESCAPED_SLASHES)),
             self::base64UrlEncode(json_encode($payload, JSON_UNESCAPED_SLASHES)),
@@ -33,6 +49,7 @@ final class Jwt
 
     public static function decode(string $token): ?array
     {
+        $alg = self::expectedAlg();
         $parts = explode('.', $token);
         if (count($parts) !== 3) return null;
         [$h64, $p64, $s64] = $parts;
@@ -42,7 +59,7 @@ final class Jwt
         $sig = self::base64UrlDecode($s64);
 
         if (!is_array($header) || !is_array($payload) || $sig === false) return null;
-        if (($header['alg'] ?? '') !== 'HS256') return null;
+        if (($header['alg'] ?? '') !== $alg) return null;
 
         $expected = hash_hmac('sha256', $h64 . '.' . $p64, self::secret(), true);
         if (!hash_equals($expected, $sig)) return null;
@@ -73,7 +90,6 @@ final class Jwt
 
     private static function secret(): string
     {
-        // Lookup obbligatorio: se manca lancia eccezione (anche in production)
         $secret = (string)Config::require('jwt.secret_key');
         if (strlen($secret) < 32) {
             $msg = 'JWT secret_key troppo corto: minimo 32 caratteri.';
